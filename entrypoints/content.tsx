@@ -277,6 +277,222 @@ function getDeepestTextContainer(el: HTMLElement): HTMLElement {
 // -----------------------------------------------------------
 // Find best subtitle container (heuristic fallback)
 // -----------------------------------------------------------
+// -----------------------------------------------------------
+// Treat visually stacked subtitle nodes as ONE subtitle
+// -----------------------------------------------------------
+//
+// A surprisingly common player trick is:
+//
+//   <div class="subtitle-line">first line</div>
+//   <div class="subtitle-line">second line</div>
+//
+// The two nodes are siblings, but visually they are one cue. Selecting only
+// the line under the mouse makes the extension appear to randomly lose half
+// of the subtitle. We therefore build a logical subtitle group from nearby
+// subtitle-like nodes and return their lowest common ancestor when that
+// ancestor contains exactly the grouped text.
+//
+// This remains DOM-only, so it works for pointer-events:none subtitles too.
+
+function normalizeSubtitleText(text: string): string {
+  return text
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getLowestCommonHTMLElement(elements: HTMLElement[]): HTMLElement | null {
+  if (elements.length === 0) return null;
+  const first = elements[0]!; // non-null assertion, safe after length check
+  if (elements.length === 1) return first;
+
+  const firstAncestors: HTMLElement[] = [];
+  let current: HTMLElement | null = first;
+  while (current) {
+    firstAncestors.push(current);
+    current = current.parentElement;
+  }
+
+  for (const ancestor of firstAncestors) {
+    if (elements.every((el) => ancestor === el || ancestor.contains(el))) {
+      return ancestor;
+    }
+  }
+
+  return null;
+}
+
+function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null): boolean {
+  if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
+
+  const tag = el.tagName.toLowerCase();
+  if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) {
+    return false;
+  }
+
+  if (el.querySelector('video, canvas') !== null) return false;
+  if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return false;
+  if (el.closest('.control, .controls, .progress, .volume, .player-controls')) return false;
+
+  const text = normalizeSubtitleText(el.innerText || '');
+  if (!text || !isSubtitleText(text)) return false;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+
+  if (videoRect) {
+    if (rect.width >= videoRect.width * 0.96) return false;
+    if (rect.height >= videoRect.height * 0.25) return false;
+
+    // Subtitle lines should normally be inside the video. A small tolerance
+    // handles players that place captions just outside its exact box.
+    if (
+      rect.right < videoRect.left - 24 ||
+      rect.left > videoRect.right + 24 ||
+      rect.bottom < videoRect.top - 24 ||
+      rect.top > videoRect.bottom + 24
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function canBelongToSubtitleGroup(
+  anchor: HTMLElement,
+  candidate: HTMLElement,
+  videoRect: DOMRect | null,
+): boolean {
+  if (candidate === anchor) return false;
+
+  // Ignore formatting wrappers inside the same line. We only want genuinely
+  // distinct visual subtitle components (usually siblings or cousins).
+  if (anchor.contains(candidate) || candidate.contains(anchor)) return false;
+  if (!isUsableSubtitleLine(candidate, videoRect)) return false;
+
+  const a = anchor.getBoundingClientRect();
+  const b = candidate.getBoundingClientRect();
+
+  // Compare the visual centres rather than relying on DOM order. This works
+  // with flex, transforms, RTL text, and absolutely positioned lines.
+  const aCenterY = a.top + a.height / 2;
+  const bCenterY = b.top + b.height / 2;
+  const verticalGap = Math.max(0, Math.abs(aCenterY - bCenterY) - (a.height + b.height) / 2);
+
+  // Allow roughly one line of separation, with a minimum tolerance for tiny
+  // fonts and transformed player overlays.
+  const maxVerticalGap = Math.max(18, Math.max(a.height, b.height) * 1.35);
+  if (verticalGap > maxVerticalGap) return false;
+
+  const horizontalGap = Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right));
+  const maxHorizontalGap = Math.max(80, Math.min(a.width, b.width) * 0.45);
+  if (horizontalGap > maxHorizontalGap) return false;
+
+  // They should actually live in approximately the same horizontal caption
+  // band. This rejects nearby UI labels sitting beside the subtitle.
+  const centreXDistance = Math.abs((a.left + a.right) / 2 - (b.left + b.right) / 2);
+  const maxCentreXDistance = Math.max(180, Math.max(a.width, b.width) * 0.8);
+  if (centreXDistance > maxCentreXDistance) return false;
+
+  const aStyle = getComputedStyle(anchor);
+  const bStyle = getComputedStyle(candidate);
+  const aFont = parseFloat(aStyle.fontSize);
+  const bFont = parseFloat(bStyle.fontSize);
+
+  if (Number.isFinite(aFont) && Number.isFinite(bFont)) {
+    const fontRatio = Math.max(aFont, bFont) / Math.max(1, Math.min(aFont, bFont));
+    if (fontRatio > 1.7) return false;
+  }
+
+  // Matching centred text is a very strong signal for two stacked subtitle
+  // lines, but do not require it because many players use left-aligned spans.
+  if (aStyle.textAlign === bStyle.textAlign && aStyle.textAlign === 'center') {
+    return true;
+  }
+
+  // Otherwise require some horizontal overlap. This prevents UI text that is
+  // merely above/below the caption from getting grouped with it.
+  const horizontalOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  return horizontalOverlap >= Math.min(a.width, b.width) * 0.18;
+}
+
+function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | null): HTMLElement {
+  if (!isUsableSubtitleLine(anchor, videoRect)) return anchor;
+
+  const allElements = getAllElements(document);
+  const related: HTMLElement[] = [anchor];
+
+  // First pass: collect nearby subtitle-like elements. We intentionally do not
+  // require matching classes because some players give each line different
+  // generated class names.
+  for (const candidate of allElements) {
+    if (related.length >= 8) break;
+    if (canBelongToSubtitleGroup(anchor, candidate, videoRect)) {
+      related.push(candidate);
+    }
+  }
+
+  if (related.length < 2) return anchor;
+
+  // Sort in visual order, not DOM order. This matters for transformed and RTL
+  // players and makes the text comparison stable.
+  related.sort((a, b) => {
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    if (Math.abs(ar.top - br.top) > 4) return ar.top - br.top;
+    return ar.left - br.left;
+  });
+
+  // Keep only a tight vertical cluster around the anchor. This is the key
+  // safeguard against accidentally grouping a nearby second subtitle cue.
+  const anchorRect = anchor.getBoundingClientRect();
+  const minTop = Math.min(...related.map((el) => el.getBoundingClientRect().top));
+  const maxBottom = Math.max(...related.map((el) => el.getBoundingClientRect().bottom));
+  const clusterHeight = maxBottom - minTop;
+  const maxClusterHeight = videoRect
+    ? Math.max(180, videoRect.height * 0.22)
+    : Math.max(180, window.innerHeight * 0.22);
+
+  if (clusterHeight > maxClusterHeight) {
+    const nearby = related.filter((el) => {
+      const r = el.getBoundingClientRect();
+      const centerDistance = Math.abs((r.top + r.height / 2) - (anchorRect.top + anchorRect.height / 2));
+      return centerDistance <= Math.max(110, anchorRect.height * 4);
+    });
+    related.length = 0;
+    related.push(...nearby);
+  }
+
+  if (related.length < 2) return anchor;
+
+  const group = getLowestCommonHTMLElement(related);
+  if (!group || group === anchor) return anchor;
+
+  const expectedText = normalizeSubtitleText(related.map((el) => el.innerText || '').join(' '));
+  const actualText = normalizeSubtitleText(group.innerText || '');
+
+  // Critical guard: the common ancestor must contain ONLY the grouped subtitle
+  // text. If it also contains controls, usernames, scoreboards, etc., reject it.
+  if (!expectedText || actualText !== expectedText) return anchor;
+  if (!isSubtitleText(actualText)) return anchor;
+
+  const groupRect = group.getBoundingClientRect();
+  if (groupRect.width <= 0 || groupRect.height <= 0) return anchor;
+  if (videoRect) {
+    if (groupRect.width > videoRect.width * 0.94) return anchor;
+    if (groupRect.height > videoRect.height * 0.30) return anchor;
+  } else if (groupRect.height > window.innerHeight * 0.30) {
+    return anchor;
+  }
+
+  if (DEBUG) {
+    console.log('[Subany] 🧩 Grouped stacked subtitle lines:', related, '=>', group);
+  }
+
+  return group;
+}
+
 function findBestSubtitleContainer(): HTMLElement | null {
   const allElements = getAllElements(document);
   let best: CandidateScore | null = null;
@@ -293,13 +509,15 @@ function findBestSubtitleContainer(): HTMLElement | null {
 
   if (best && best.score > 5) {
     const deepest = getDeepestTextContainer(best.element);
-    console.log('[Subany] 🏆 Best container:', deepest, 'score:', best.score, 'reasons:', best.reasons);
-    return deepest;
+    const grouped = combineSubtitleLines(deepest, null);
+    console.log('[Subany] 🏆 Best container:', grouped, 'score:', best.score, 'reasons:', best.reasons);
+    return grouped;
   }
 
   const live = document.querySelector('[aria-live="polite"][aria-atomic="true"]');
   if (live && isSubtitleText(live.textContent?.trim() || '')) {
-    return getDeepestTextContainer(live as HTMLElement);
+    const liveEl = getDeepestTextContainer(live as HTMLElement);
+    return combineSubtitleLines(liveEl, null);
   }
   return null;
 }
@@ -353,17 +571,23 @@ function findSubtitleByGeometry(clientX: number, clientY: number): HTMLElement |
 
   if (best && best.score > 15) {
     const leaf = getDeepestTextContainer(best.element);
+    const containingVideo = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
+      const r = v.getBoundingClientRect();
+      const er = leaf.getBoundingClientRect();
+      return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
+    });
+    const grouped = combineSubtitleLines(leaf, containingVideo?.getBoundingClientRect() ?? null);
     if (DEBUG) {
       console.log(
         '[Subany] 🧭 Geometry fallback found subtitle:',
-        leaf,
+        grouped,
         'score:',
         best.score,
         'reasons:',
         best.reasons,
       );
     }
-    return leaf;
+    return grouped;
   }
 
   return null;
@@ -461,9 +685,10 @@ function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLEle
 
   if (best) {
     const leaf = getDeepestTextContainer(best.element);
-    if (DEBUG) console.log(`[Subany] 🏆 Best candidate:`, best.element, 'score:', best.score, 'reasons:', best.reasons);
-    if (DEBUG) console.log(`[Subany]   → Returning leaf:`, leaf);
-    return leaf;
+    const grouped = combineSubtitleLines(leaf, vRect);
+    if (DEBUG) console.log(`[Subany] 🏆 Best candidate:`, grouped, 'score:', best.score, 'reasons:', best.reasons);
+    if (DEBUG) console.log(`[Subany]   → Returning logical subtitle group:`, grouped);
+    return grouped;
   }
 
   if (validStack[0]) {
@@ -575,9 +800,6 @@ function isPointInRectWithPadding(x: number, y: number, rect: DOMRect, padding =
 function findNativeSubtitleAtPoint(clientX: number, clientY: number): NativeSubtitleHit | null {
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
 
-  let best: NativeSubtitleHit | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
   for (const video of videos) {
     const videoRect = video.getBoundingClientRect();
     if (videoRect.width <= 0 || videoRect.height <= 0) continue;
@@ -591,6 +813,8 @@ function findNativeSubtitleAtPoint(clientX: number, clientY: number): NativeSubt
       continue;
     }
 
+    const cueHits: Array<{ cue: TextTrackCue; text: string; rect: DOMRect; track: TextTrack }> = [];
+
     for (const track of Array.from(video.textTracks)) {
       const kind = (track.kind || '').toLowerCase();
       if (kind !== 'subtitles' && kind !== 'captions') continue;
@@ -602,23 +826,62 @@ function findNativeSubtitleAtPoint(clientX: number, clientY: number): NativeSubt
       for (const cue of Array.from(cues)) {
         const text = cueToPlainText(cue);
         if (!isSubtitleText(text)) continue;
-
-        const rect = getVideoSubtitleRect(video, cue);
-        if (!isPointInRectWithPadding(clientX, clientY, rect, 36)) continue;
-
-        const dx = clientX - (rect.left + rect.width / 2);
-        const dy = clientY - (rect.top + rect.height / 2);
-        const distance = dx * dx + dy * dy;
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = { text, rect, video };
-        }
+        cueHits.push({ cue, text, rect: getVideoSubtitleRect(video, cue), track });
       }
     }
+
+    if (cueHits.length === 0) continue;
+
+    const underPoint = cueHits
+      .filter((hit) => isPointInRectWithPadding(clientX, clientY, hit.rect, 36))
+      .sort((a, b) => {
+        const ar = a.rect;
+        const br = b.rect;
+        const adx = clientX - (ar.left + ar.width / 2);
+        const ady = clientY - (ar.top + ar.height / 2);
+        const bdx = clientX - (br.left + br.width / 2);
+        const bdy = clientY - (br.top + br.height / 2);
+        return (adx * adx + ady * ady) - (bdx * bdx + bdy * bdy);
+      })[0];
+
+    if (!underPoint) continue;
+
+    // Group only cues from the same track. That avoids accidentally joining
+    // two different subtitle languages that happen to be active at once.
+    const related = cueHits.filter((hit) => {
+      if (hit.track !== underPoint.track) return false;
+      if (hit === underPoint) return true;
+
+      const a = underPoint.rect;
+      const b = hit.rect;
+      const verticalGap = Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom));
+      const horizontalOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+      const closeEnough = verticalGap <= Math.max(20, Math.min(a.height, b.height) * 1.5);
+      const horizontallyAligned = horizontalOverlap >= Math.min(a.width, b.width) * 0.15;
+      return closeEnough && horizontallyAligned;
+    });
+
+    if (related.length === 1) {
+      return { text: underPoint.text, rect: underPoint.rect, video };
+    }
+
+    related.sort((a, b) => a.rect.top - b.rect.top);
+    const left = Math.min(...related.map((hit) => hit.rect.left));
+    const top = Math.min(...related.map((hit) => hit.rect.top));
+    const right = Math.max(...related.map((hit) => hit.rect.right));
+    const bottom = Math.max(...related.map((hit) => hit.rect.bottom));
+
+    const text = normalizeSubtitleText(related.map((hit) => hit.text).join(' '));
+    const rect = new DOMRect(left, top, right - left, bottom - top);
+
+    if (DEBUG) {
+      console.log('[Subany] 🧩 Grouped native subtitle cues:', related.map((hit) => hit.text));
+    }
+
+    return { text, rect, video };
   }
 
-  return best;
+  return null;
 }
 
 // Last-resort geometric fallback.
@@ -812,11 +1075,17 @@ export default defineContentScript({
       if (!settings.lockedSelector) {
         const platformEl = subtitleManager.detectPlatformContainer();
         if (platformEl && document.body.contains(platformEl)) {
-          if (activeContainerEl !== platformEl) {
-            activeContainerEl = platformEl;
+          const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
+            const r = v.getBoundingClientRect();
+            const er = platformEl.getBoundingClientRect();
+            return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
+          });
+          const grouped = combineSubtitleLines(platformEl, videoForElement?.getBoundingClientRect() ?? null);
+          if (activeContainerEl !== grouped) {
+            activeContainerEl = grouped;
             render();
           }
-          return platformEl;
+          return grouped;
         }
         return activeContainerEl;
       }
@@ -824,21 +1093,33 @@ export default defineContentScript({
       try {
         const el = document.querySelector(settings.lockedSelector) as HTMLElement;
         if (el && document.body.contains(el)) {
-          if (activeContainerEl !== el) {
-            activeContainerEl = el;
+          const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
+            const r = v.getBoundingClientRect();
+            const er = el.getBoundingClientRect();
+            return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
+          });
+          const grouped = combineSubtitleLines(el, videoForElement?.getBoundingClientRect() ?? null);
+          if (activeContainerEl !== grouped) {
+            activeContainerEl = grouped;
             render();
           }
-          return el;
+          return grouped;
         }
       } catch (_) { /* ignore */ }
 
       const platformEl = subtitleManager.detectPlatformContainer();
       if (platformEl && document.body.contains(platformEl)) {
-        if (activeContainerEl !== platformEl) {
-          activeContainerEl = platformEl;
+        const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
+          const r = v.getBoundingClientRect();
+          const er = platformEl.getBoundingClientRect();
+          return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
+        });
+        const grouped = combineSubtitleLines(platformEl, videoForElement?.getBoundingClientRect() ?? null);
+        if (activeContainerEl !== grouped) {
+          activeContainerEl = grouped;
           render();
         }
-        return platformEl;
+        return grouped;
       }
 
       return null;
@@ -846,8 +1127,14 @@ export default defineContentScript({
 
     const lockContainer = async (element: HTMLElement, isAuto = false) => {
       console.log('[Subany] 🔒 Locking container from element:', element);
-      const container = subtitleManager.findOptimalSubtitleContainer(element);
-      console.log('[Subany]   → Optimised container:', container);
+      const optimized = subtitleManager.findOptimalSubtitleContainer(element);
+      const videoForPoint = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
+        const r = v.getBoundingClientRect();
+        const er = element.getBoundingClientRect();
+        return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
+      });
+      const container = combineSubtitleLines(optimized, videoForPoint?.getBoundingClientRect() ?? null);
+      console.log('[Subany]   → Optimised/grouped container:', container);
       const selector = subtitleManager.generateUniqueSelector(container);
       activeContainerEl = container;
       settings.lockedSelector = selector;
