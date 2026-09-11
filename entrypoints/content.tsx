@@ -1,8 +1,3 @@
-/**
- * content.tsx – Main content script with full debug logging
- * Set DEBUG = true at the top to see detailed logs.
- */
-
 import { createRoot, type Root } from 'react-dom/client';
 import { SubtitleOverlay } from '../components/SubtitleOverlay';
 import { Tooltip } from '../components/Tooltip';
@@ -12,15 +7,7 @@ import { TextExtractor, type TextExtractionResult } from '../lib/TextExtractor';
 import { TranslationManager } from '../lib/TranslationManager';
 import { DEFAULT_SETTINGS, type ExtensionSettings } from '../lib/types';
 import { VideoController } from '../lib/VideoController';
-
-// -----------------------------------------------------------
-// 🔥 DEBUG flag – set to true to see detailed logs
-// -----------------------------------------------------------
-const DEBUG = true;
-
-// -----------------------------------------------------------
 // Utility: Debounce
-// -----------------------------------------------------------
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return ((...args: any[]) => {
@@ -28,21 +15,33 @@ function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
     timer = setTimeout(() => fn(...args), delay);
   }) as T;
 }
-
-// -----------------------------------------------------------
 // Helper: Determine if a string looks like actual subtitle text
-// -----------------------------------------------------------
-function isSubtitleText(text: string): boolean {
-  if (text.length < 2) return false;
-  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(text)) return false;
-  if (/^\d+(\.\d+)?%?$/.test(text)) return false;
-  if (/^(Settings|Quality|Speed|Audio|Subtitles|CC|Off|On|Play|Pause|Mute)$/i.test(text)) return false;
-  return /[\p{L}\p{N}]/u.test(text);
+function normalizeSubtitleText(text: string): string {
+  return text
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-// -----------------------------------------------------------
+function isPlaybackTimeText(text: string): boolean {
+  const value = normalizeSubtitleText(text);
+  if (!value) return false;
+
+  const time = '(?:\d{1,3}:)?\d{1,2}:\d{2}(?:\.\d{1,3})?';
+  return new RegExp(`^${time}$`).test(value) ||
+    new RegExp(`^${time}\\s*(?:/|\\|)\\s*${time}$`).test(value) ||
+    new RegExp(`^${time}\\s*(?:-|→)\\s*${time}$`).test(value);
+}
+
+function isSubtitleText(text: string): boolean {
+  const value = normalizeSubtitleText(text);
+  if (value.length < 2) return false;
+  if (isPlaybackTimeText(value)) return false;
+  if (/^\d+(\.\d+)?%?$/.test(value)) return false;
+  if (/^(Settings|Quality|Speed|Audio|Subtitles|CC|Off|On|Play|Pause|Mute|Volume|Fullscreen|Next|Previous|Bookmark|Report)$/i.test(value)) return false;
+  return /[\p{L}\p{N}]/u.test(value);
+}
 // Compute DOM depth
-// -----------------------------------------------------------
 function getDomDepth(el: Node): number {
   let depth = 0;
   let current = el;
@@ -52,10 +51,7 @@ function getDomDepth(el: Node): number {
   }
   return depth;
 }
-
-// -----------------------------------------------------------
 // Score a candidate element for being a subtitle container
-// -----------------------------------------------------------
 interface CandidateScore {
   element: HTMLElement;
   score: number;
@@ -68,9 +64,99 @@ function hasSubtitleClass(el: HTMLElement): boolean {
   return /(subtitle|sub|captions|cc|cue|translation|track|vtt|timed-text|player-caption)/i.test(id + cls);
 }
 
+function getInteractiveControlCount(el: HTMLElement): number {
+  return el.querySelectorAll(
+    'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]'
+  ).length;
+}
+
+function isDirectInteractiveElement(el: HTMLElement): boolean {
+  return el.matches(
+    'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]'
+  );
+}
+
+function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null = null): boolean {
+  if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return true;
+
+  if (isDirectInteractiveElement(el) || el.closest(
+    'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]'
+  )) {
+    return true;
+  }
+
+  const ownText = normalizeSubtitleText(el.innerText || el.textContent || '');
+  if (isPlaybackTimeText(ownText)) return true;
+
+  let current: HTMLElement | null = el.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const rect = current.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      const controls = getInteractiveControlCount(current);
+      if (controls >= 2) {
+        const style = getComputedStyle(current);
+        const pointerEvents = style.pointerEvents;
+        const positioned = style.position === 'absolute' || style.position === 'fixed' || style.position === 'sticky';
+        const bottomReference = videoRect && videoRect.height > 0
+          ? videoRect.bottom
+          : window.innerHeight;
+        const topReference = videoRect?.top ?? 0;
+        const heightReference = videoRect?.height ?? window.innerHeight;
+        const compact = rect.height <= Math.max(180, heightReference * 0.40);
+        const touchesBottom = rect.bottom >= bottomReference - Math.max(12, heightReference * 0.05);
+        const insideVerticalBand = rect.bottom >= topReference + heightReference * 0.55;
+        const candidateRect = el.getBoundingClientRect();
+        const candidateInside =
+          candidateRect.left >= rect.left - 8 &&
+          candidateRect.right <= rect.right + 8 &&
+          candidateRect.top >= rect.top - 8 &&
+          candidateRect.bottom <= rect.bottom + 8;
+
+        if (
+          pointerEvents !== 'none' &&
+          positioned &&
+          compact &&
+          touchesBottom &&
+          insideVerticalBand &&
+          candidateInside
+        ) {
+          return true;
+        }
+      }
+    }
+    current = current.parentElement;
+  }
+
+  return false;
+}
+
+function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMRect | null): HTMLElement | null {
+  let current: HTMLElement | null = el.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const style = getComputedStyle(current);
+    if (style.pointerEvents === 'none' && (style.position === 'absolute' || style.position === 'fixed')) {
+      const rect = current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        if (!videoRect || (
+          rect.right >= videoRect.left &&
+          rect.left <= videoRect.right &&
+          rect.bottom >= videoRect.top &&
+          rect.top <= videoRect.bottom
+        )) {
+          const controls = getInteractiveControlCount(current);
+          if (controls === 0) return current;
+        }
+      }
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
 function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
-  const text = el.innerText?.trim() || '';
+  const text = normalizeSubtitleText(el.innerText || el.textContent || '');
   if (!text || !isSubtitleText(text)) return null;
+  if (isPlayerControlRegion(el)) return null;
 
   let score = 0;
   const reasons: string[] = [];
@@ -204,17 +290,9 @@ function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
     score -= 40;
     reasons.push('has-subtitle-child');
   }
-
-  if (DEBUG) {
-    console.log(`[Subany] Score for`, el, ` => ${score} (${reasons.join(', ')})`);
-  }
-
   return { element: el, score, reasons };
 }
-
-// -----------------------------------------------------------
 // Traverse DOM, Shadow DOM, and iframes
-// -----------------------------------------------------------
 function getAllElements(root: Node | ShadowRoot): HTMLElement[] {
   const elements: HTMLElement[] = [];
   const walker = document.createTreeWalker(
@@ -245,10 +323,7 @@ function getAllElements(root: Node | ShadowRoot): HTMLElement[] {
   }
   return elements;
 }
-
-// -----------------------------------------------------------
 // Drill down to the deepest text container (leaf)
-// -----------------------------------------------------------
 function getDeepestTextContainer(el: HTMLElement): HTMLElement {
   let current = el;
   let depth = 0;
@@ -270,16 +345,10 @@ function getDeepestTextContainer(el: HTMLElement): HTMLElement {
     }
     break;
   }
-  if (DEBUG) console.log(`[Subany] getDeepestTextContainer from`, el, `=>`, current);
   return current;
 }
-
-// -----------------------------------------------------------
 // Find best subtitle container (heuristic fallback)
-// -----------------------------------------------------------
-// -----------------------------------------------------------
 // Treat visually stacked subtitle nodes as ONE subtitle
-// -----------------------------------------------------------
 //
 // A surprisingly common player trick is:
 //
@@ -294,16 +363,9 @@ function getDeepestTextContainer(el: HTMLElement): HTMLElement {
 //
 // This remains DOM-only, so it works for pointer-events:none subtitles too.
 
-function normalizeSubtitleText(text: string): string {
-  return text
-    .replace(/\u00a0/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function getLowestCommonHTMLElement(elements: HTMLElement[]): HTMLElement | null {
   if (elements.length === 0) return null;
-  const first = elements[0]!; // non-null assertion, safe after length check
+  const first = elements[0]!; // non‑null assertion: safe because length > 0
   if (elements.length === 1) return first;
 
   const firstAncestors: HTMLElement[] = [];
@@ -324,6 +386,10 @@ function getLowestCommonHTMLElement(elements: HTMLElement[]): HTMLElement | null
 
 function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null): boolean {
   if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
+
+  const rawText = normalizeSubtitleText(el.innerText || el.textContent || '');
+  if (!rawText || !isSubtitleText(rawText)) return false;
+  if (isPlayerControlRegion(el)) return false;
 
   const tag = el.tagName.toLowerCase();
   if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) {
@@ -485,11 +551,6 @@ function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | null): H
   } else if (groupRect.height > window.innerHeight * 0.30) {
     return anchor;
   }
-
-  if (DEBUG) {
-    console.log('[Subany] 🧩 Grouped stacked subtitle lines:', related, '=>', group);
-  }
-
   return group;
 }
 
@@ -510,7 +571,7 @@ function findBestSubtitleContainer(): HTMLElement | null {
   if (best && best.score > 5) {
     const deepest = getDeepestTextContainer(best.element);
     const grouped = combineSubtitleLines(deepest, null);
-    console.log('[Subany] 🏆 Best container:', grouped, 'score:', best.score, 'reasons:', best.reasons);
+
     return grouped;
   }
 
@@ -521,11 +582,7 @@ function findBestSubtitleContainer(): HTMLElement | null {
   }
   return null;
 }
-
-// -----------------------------------------------------------
 // Find genuine subtitle element under a point
-// -----------------------------------------------------------
-
 // Same DOM, different hit-testing path.
 //
 // elementsFromPoint() only returns elements that participate in pointer
@@ -577,16 +634,6 @@ function findSubtitleByGeometry(clientX: number, clientY: number): HTMLElement |
       return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
     });
     const grouped = combineSubtitleLines(leaf, containingVideo?.getBoundingClientRect() ?? null);
-    if (DEBUG) {
-      console.log(
-        '[Subany] 🧭 Geometry fallback found subtitle:',
-        grouped,
-        'score:',
-        best.score,
-        'reasons:',
-        best.reasons,
-      );
-    }
     return grouped;
   }
 
@@ -594,11 +641,7 @@ function findSubtitleByGeometry(clientX: number, clientY: number): HTMLElement |
 }
 
 function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLElement | null {
-  if (DEBUG) console.log(`[Subany] 🔍 Looking at point (${clientX}, ${clientY})`);
-
   const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
-  if (DEBUG) console.log(`[Subany] elementsFromPoint stack size: ${stack.length}`);
-
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
   const nearestVideo = videos[0] ?? null;
   const vRect = nearestVideo ? nearestVideo.getBoundingClientRect() : null;
@@ -631,9 +674,6 @@ function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLEle
 
     return true;
   });
-
-  if (DEBUG) console.log(`[Subany] validStack after filtering:`, validStack.map(el => el.className || el.tagName));
-
   // IMPORTANT: elementsFromPoint() misses pointer-events:none subtitles.
   // Search the actual DOM rectangles before falling back to video/text-track
   // detection.
@@ -664,7 +704,6 @@ function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLEle
               clientY <= r.bottom + 40
             ) {
               const leaf = getDeepestTextContainer(child);
-              if (DEBUG) console.log(`[Subany] 🔥 Found nearby subtitle leaf:`, leaf);
               return leaf;
             }
           }
@@ -686,14 +725,11 @@ function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLEle
   if (best) {
     const leaf = getDeepestTextContainer(best.element);
     const grouped = combineSubtitleLines(leaf, vRect);
-    if (DEBUG) console.log(`[Subany] 🏆 Best candidate:`, grouped, 'score:', best.score, 'reasons:', best.reasons);
-    if (DEBUG) console.log(`[Subany]   → Returning logical subtitle group:`, grouped);
     return grouped;
   }
 
   if (validStack[0]) {
     const leaf = getDeepestTextContainer(validStack[0]);
-    if (DEBUG) console.log(`[Subany] ⚠️ No scored candidate, fallback to first valid:`, leaf);
     return leaf;
   }
 
@@ -703,9 +739,6 @@ function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLEle
 function findSubtitleElementUnderPoint(clientX: number, clientY: number): HTMLElement | null {
   return findGenuineSubtitleCandidate(clientX, clientY);
 }
-
-
-// -----------------------------------------------------------
 // Native video subtitle fallback
 //
 // Some players render subtitles outside the DOM entirely:
@@ -718,7 +751,6 @@ function findSubtitleElementUnderPoint(clientX: number, clientY: number): HTMLEl
 // subtitle. When the video exposes native TextTracks, the text
 // is still available through the active cue even though there
 // is no selectable DOM node.
-// -----------------------------------------------------------
 interface NativeSubtitleHit {
   text: string;
   rect: DOMRect;
@@ -873,11 +905,6 @@ function findNativeSubtitleAtPoint(clientX: number, clientY: number): NativeSubt
 
     const text = normalizeSubtitleText(related.map((hit) => hit.text).join(' '));
     const rect = new DOMRect(left, top, right - left, bottom - top);
-
-    if (DEBUG) {
-      console.log('[Subany] 🧩 Grouped native subtitle cues:', related.map((hit) => hit.text));
-    }
-
     return { text, rect, video };
   }
 
@@ -907,10 +934,7 @@ function isLikelySubtitleZone(clientX: number, clientY: number): HTMLVideoElemen
 
   return null;
 }
-
-// -----------------------------------------------------------
 // In-Place DOM text swapper
-// -----------------------------------------------------------
 class DomTextSwapper {
   private saved = new Map<Text, string>();
 
@@ -968,15 +992,11 @@ class DomTextSwapper {
     return result;
   }
 }
-
-// -----------------------------------------------------------
 // Main content script
-// -----------------------------------------------------------
 export default defineContentScript({
   matches: ['<all_urls>', 'https://player.videasy.to/*', 'https://player.videasy.net/*'],
   allFrames: true,
   main() {
-    console.log('[Subany] Content script loaded in:', window.location.href);
 
     let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
@@ -1016,13 +1036,462 @@ export default defineContentScript({
     let bilingualSubtitleText = '';
     let lastObservedSubtitleText = '';
 
+    // A CSS selector is useful, but it is NOT a stable identity on modern
+    // video players. Many players destroy/recreate subtitle nodes whenever
+    // a cue changes, the playback rate changes, seeking happens, or the
+    // player rebuilds its overlay. Keep a logical geometry anchor as the real
+    // lock identity and use the selector only as the first reattachment path.
+    interface LockedSubtitleAnchor {
+      centerXRatio: number;
+      centerYRatio: number;
+      widthRatio: number;
+      heightRatio: number;
+      absoluteRect: { left: number; top: number; width: number; height: number };
+      videoRect: { left: number; top: number; width: number; height: number } | null;
+      videoSignature?: string;
+      textHint: string;
+      updatedAt: number;
+    }
+
+    let lockedSubtitleAnchor: LockedSubtitleAnchor | null = null;
+    let lockedVideoElement: HTMLVideoElement | null = null;
+    let lockedVideoSignature = '';
+    let lockedVisualProxyEl: HTMLDivElement | null = null;
+    let lockedVisualProxyStyle: CSSStyleDeclaration | null = null;
+    let lockedMonitorTimer: number | null = null;
+    let lastLockedReattachAt = 0;
+    let isRefreshingLockedContainer = false;
+    let lockedVideoEvents: Array<{
+      video: HTMLVideoElement;
+      event: string;
+      handler: EventListener;
+    }> = [];
+    // Automatic subtitle tracking
+    //
+    // IMPORTANT: auto-detection is deliberately NOT a user lock.
+    // A bad heuristic guess must never become a persistent lockedSelector,
+    // otherwise the user can get visually attached to the wrong container and
+    // the unlock action can immediately re-lock it.
+    interface AutoTrackState {
+      key: string;
+      video: HTMLVideoElement | null;
+      element: HTMLElement | null;
+      lastText: string;
+      seen: number;
+      textChanges: number;
+      staticScore: number;
+      lastSeenAt: number;
+      lastElementAt: number;
+    }
+
+    let autoDetectionTimer: number | null = null;
+    let autoDetectionRunning = false;
+    let autoDetectionDisabled = false;
+    let autoDetectedElement: HTMLElement | null = null;
+    let autoDetectedVideo: HTMLVideoElement | null = null;
+    let autoDetectedTrackKey: string | null = null;
+    let autoLastVisibleAt = 0;
+    let autoTracks = new Map<string, AutoTrackState>();
+    let autoNativeLastText = '';
+    let autoNativeLastVideo: HTMLVideoElement | null = null;
+    let autoNativeTranslationToken = 0;
+
+    const AUTO_SCAN_INTERVAL_MS = 280;
+    const AUTO_EMPTY_GRACE_MS = 750;
+    const AUTO_TRACK_MAX_AGE_MS = 2800;
+
+    const isAutomaticSubtitleMode = () =>
+      settings.triggerMode === 'full-auto' ||
+      settings.triggerMode === 'replace-native' ||
+      settings.replaceNativeSubtitles;
+
+    const isReplaceNativeMode = () =>
+      settings.replaceNativeSubtitles || settings.triggerMode === 'replace-native';
+
+    const makeAutoRegionKey = (element: HTMLElement, video: HTMLVideoElement | null): string => {
+      const rect = element.getBoundingClientRect();
+      const vr = video?.getBoundingClientRect() ?? null;
+      if (vr && vr.width > 0 && vr.height > 0) {
+        const x = (rect.left + rect.width / 2 - vr.left) / vr.width;
+        const y = (rect.top + rect.height / 2 - vr.top) / vr.height;
+        const w = rect.width / vr.width;
+        const h = rect.height / vr.height;
+        const q = (n: number, step = 0.035) => Math.round(n / step);
+        // Only call indexOf if video is non‑null
+        const videoIndex = video ? Array.from(document.querySelectorAll('video')).indexOf(video) : -1;
+        return `v:${videoIndex}:${q(x)}:${q(y)}:${q(w, 0.04)}:${q(h, 0.04)}`;
+      }
+      return `p:${Math.round((rect.left + rect.width / 2) / Math.max(1, window.innerWidth) / 0.035)}:${Math.round((rect.top + rect.height / 2) / Math.max(1, window.innerHeight) / 0.035)}:${Math.round(rect.width / Math.max(1, window.innerWidth) / 0.04)}:${Math.round(rect.height / Math.max(1, window.innerHeight) / 0.04)}`;
+    };
+
+    const getVideoContainingElement = (element: HTMLElement): HTMLVideoElement | null => {
+      const er = element.getBoundingClientRect();
+      let best: HTMLVideoElement | null = null;
+      let bestOverlap = 0;
+      for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
+        const vr = video.getBoundingClientRect();
+        if (vr.width <= 0 || vr.height <= 0) continue;
+        const overlapWidth = Math.max(0, Math.min(er.right, vr.right) - Math.max(er.left, vr.left));
+        const overlapHeight = Math.max(0, Math.min(er.bottom, vr.bottom) - Math.max(er.top, vr.top));
+        const overlap = overlapWidth * overlapHeight;
+        const elementArea = Math.max(1, er.width * er.height);
+        const normalized = overlap / elementArea;
+        if (normalized > bestOverlap) {
+          bestOverlap = normalized;
+          best = video;
+        }
+      }
+      return bestOverlap >= 0.20 ? best : null;
+    };
+
+    const scoreAutoCandidate = (element: HTMLElement, video: HTMLVideoElement | null): number => {
+      const videoRect = video?.getBoundingClientRect() ?? null;
+      if (isPlayerControlRegion(element, videoRect)) return -Infinity;
+
+      const scored = scoreSubtitleCandidate(element);
+      if (!scored) return -Infinity;
+
+      let score = scored.score;
+      const rect = element.getBoundingClientRect();
+
+      if (videoRect && videoRect.width > 0 && videoRect.height > 0) {
+        const cx = (rect.left + rect.width / 2 - videoRect.left) / videoRect.width;
+        const cy = (rect.top + rect.height / 2 - videoRect.top) / videoRect.height;
+        const widthRatio = rect.width / videoRect.width;
+        const heightRatio = rect.height / videoRect.height;
+
+        if (cx > 0.20 && cx < 0.80) score += 22;
+        else if (cx > 0.10 && cx < 0.90) score += 6;
+        else score -= 18;
+
+        if (cy >= 0.56 && cy <= 0.88) score += 34;
+        else if (cy > 0.88 && cy <= 0.96) score += 4;
+        else score -= 32;
+
+        if (widthRatio > 0.04 && widthRatio < 0.82) score += 12;
+        else score -= 22;
+
+        if (heightRatio > 0.01 && heightRatio < 0.16) score += 10;
+        else score -= 22;
+      }
+
+      const presentationAncestor = getSubtitlePresentationAncestor(element, videoRect);
+      if (presentationAncestor) score += 34;
+
+      if (hasSubtitleClass(element)) score += 16;
+      if (getComputedStyle(element).pointerEvents === 'none') score += 10;
+
+      // Automatic mode is intentionally conservative. A candidate should have
+      // at least one strong subtitle-specific presentation signal, rather than
+      // winning only because it happens to contain changing text.
+      const hasStrongPresentationSignal =
+        !!presentationAncestor ||
+        hasSubtitleClass(element) ||
+        getComputedStyle(element).pointerEvents === 'none';
+
+      if (!hasStrongPresentationSignal) score -= 28;
+
+      return score;
+    };
+
+    const collectAutoSubtitleCandidates = (): Array<{
+      element: HTMLElement;
+      video: HTMLVideoElement | null;
+      score: number;
+      text: string;
+      key: string;
+    }> => {
+      const allElements = getAllElements(document);
+      const raw: Array<{ element: HTMLElement; video: HTMLVideoElement | null; score: number; text: string }> = [];
+
+      for (const el of allElements) {
+        if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
+        if (!isUsableSubtitleLine(el, null)) continue;
+
+        const text = normalizeSubtitleText(el.innerText || el.textContent || '');
+        if (!text || !isSubtitleText(text)) continue;
+
+        const video = getVideoContainingElement(el);
+        if (!video) continue;
+
+        const videoRect = video.getBoundingClientRect();
+        if (videoRect.width <= 0 || videoRect.height <= 0) continue;
+        if (isPlayerControlRegion(el, videoRect)) continue;
+
+        const score = scoreAutoCandidate(el, video);
+        if (!Number.isFinite(score) || score < 50) continue;
+        if (isPlaybackTimeText(text)) continue;
+
+        raw.push({ element: el, video, score, text });
+      }
+
+      raw.sort((a, b) => b.score - a.score);
+
+      const results: Array<{ element: HTMLElement; video: HTMLVideoElement | null; score: number; text: string; key: string }> = [];
+      const usedKeys = new Set<string>();
+
+      for (const candidate of raw.slice(0, 16)) {
+        const videoRect = candidate.video?.getBoundingClientRect() ?? null;
+        if (isPlayerControlRegion(candidate.element, videoRect)) continue;
+
+        const grouped = combineSubtitleLines(candidate.element, videoRect);
+        const finalElement = isUsableSubtitleLine(grouped, videoRect) &&
+          !isPlayerControlRegion(grouped, videoRect)
+          ? grouped
+          : candidate.element;
+
+        if (isPlayerControlRegion(finalElement, videoRect)) continue;
+
+        const finalText = normalizeSubtitleText(finalElement.innerText || finalElement.textContent || '');
+        if (!finalText || !isSubtitleText(finalText)) continue;
+
+        const finalScore = scoreAutoCandidate(finalElement, candidate.video);
+        if (!Number.isFinite(finalScore) || finalScore < 50) continue;
+
+        const key = makeAutoRegionKey(finalElement, candidate.video);
+        if (usedKeys.has(key)) continue;
+        usedKeys.add(key);
+
+        results.push({
+          element: finalElement,
+          video: candidate.video,
+          score: finalScore,
+          text: finalText,
+          key,
+        });
+      }
+
+      return results;
+    };
+
+    const findCurrentNativeAutoCue = (): NativeSubtitleHit | null => {
+      const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+      for (const video of videos) {
+        const vr = video.getBoundingClientRect();
+        if (vr.width <= 0 || vr.height <= 0) continue;
+
+        for (const track of Array.from(video.textTracks)) {
+          const kind = (track.kind || '').toLowerCase();
+          if (kind !== 'subtitles' && kind !== 'captions') continue;
+          prepareNativeTextTrack(track);
+          const cues = track.activeCues;
+          if (!cues || cues.length === 0) continue;
+
+          const hits = Array.from(cues)
+            .map((cue) => ({ cue, text: cueToPlainText(cue), rect: getVideoSubtitleRect(video, cue) }))
+            .filter((hit) => isSubtitleText(hit.text));
+
+          if (hits.length === 0) continue;
+          hits.sort((a, b) => a.rect.top - b.rect.top);
+
+          const left = Math.min(...hits.map((hit) => hit.rect.left));
+          const top = Math.min(...hits.map((hit) => hit.rect.top));
+          const right = Math.max(...hits.map((hit) => hit.rect.right));
+          const bottom = Math.max(...hits.map((hit) => hit.rect.bottom));
+          return {
+            text: normalizeSubtitleText(hits.map((hit) => hit.text).join(' ')),
+            rect: new DOMRect(left, top, right - left, bottom - top),
+            video,
+          };
+        }
+      }
+      return null;
+    };
+
+    const clearAutoVisual = () => {
+      if (!isAutomaticSubtitleMode() || settings.lockedSelector) return;
+      if (autoDetectedElement || activeContainerEl) {
+        activeContainerEl = null;
+        autoDetectedElement = null;
+        autoDetectedVideo = null;
+        autoDetectedTrackKey = null;
+        triggerGlowFallbackClear();
+        render();
+      }
+    };
+
+    const triggerGlowFallbackClear = () => {
+      if (glowTargetEl && !settings.lockedSelector) {
+        glowTargetEl = null;
+      }
+    };
+
+    const updateAutoDetection = () => {
+      if (autoDetectionDisabled || settings.lockedSelector || !isAutomaticSubtitleMode()) return;
+
+      const now = performance.now();
+      const candidates = collectAutoSubtitleCandidates();
+      const seenKeys = new Set<string>();
+
+      for (const candidate of candidates) {
+        seenKeys.add(candidate.key);
+        const existing = autoTracks.get(candidate.key);
+        if (!existing) {
+          autoTracks.set(candidate.key, {
+            key: candidate.key,
+            video: candidate.video,
+            element: candidate.element,
+            lastText: candidate.text,
+            seen: 1,
+            textChanges: 0,
+            staticScore: candidate.score,
+            lastSeenAt: now,
+            lastElementAt: now,
+          });
+        } else {
+          if (existing.lastText && candidate.text !== existing.lastText) {
+            existing.textChanges += 1;
+          }
+          existing.lastText = candidate.text;
+          existing.seen += 1;
+          existing.staticScore = existing.staticScore * 0.65 + candidate.score * 0.35;
+          existing.element = candidate.element;
+          existing.video = candidate.video;
+          existing.lastSeenAt = now;
+          existing.lastElementAt = now;
+        }
+      }
+
+      for (const [key, track] of autoTracks) {
+        if (now - track.lastSeenAt > AUTO_TRACK_MAX_AGE_MS) autoTracks.delete(key);
+      }
+
+      const eligible = Array.from(autoTracks.values())
+        .map((track) => {
+          const dynamicBonus = Math.min(42, track.textChanges * 14);
+          const persistenceBonus = Math.min(24, Math.max(0, track.seen - 1) * 6);
+          const total = track.staticScore + dynamicBonus + persistenceBonus;
+          const currentText = normalizeSubtitleText(track.lastText);
+          const qualifies =
+            !isPlaybackTimeText(currentText) &&
+            track.seen >= 3 &&
+            track.staticScore >= 58 &&
+            (track.textChanges >= 1 || track.staticScore >= 92);
+          return { track, total, qualifies };
+        })
+        .filter((item) => item.qualifies)
+        .sort((a, b) => b.total - a.total);
+
+      let best = eligible[0]?.track ?? null;
+
+      if (autoDetectedTrackKey && autoTracks.has(autoDetectedTrackKey)) {
+        const currentTrack = autoTracks.get(autoDetectedTrackKey)!;
+        const currentEligible = eligible.find((item) => item.track.key === currentTrack.key);
+        if (currentEligible) {
+          const bestTotal = eligible[0]?.total ?? -Infinity;
+          // Do not jump from an established subtitle region to a weaker candidate.
+          // A new region must beat it by a meaningful margin.
+          if (currentEligible.total + 28 >= bestTotal) {
+            best = currentTrack;
+          }
+        }
+      }
+
+      // Native TextTrack auto detection gets an independent path. It is never
+      // converted into a fake DOM lock.
+      const nativeHit = findCurrentNativeAutoCue();
+      if (nativeHit && !best) {
+        activeContainerEl = null;
+        autoDetectedElement = null;
+        autoDetectedVideo = nativeHit.video;
+        autoDetectedTrackKey = 'native';
+
+        if (nativeHit.text !== autoNativeLastText || nativeHit.video !== autoNativeLastVideo) {
+          autoNativeLastText = nativeHit.text;
+          autoNativeLastVideo = nativeHit.video;
+          const token = ++autoNativeTranslationToken;
+          void handleSubtitleTextChange(nativeHit.text).then(() => {
+            if (token !== autoNativeTranslationToken) return;
+          });
+        }
+        autoLastVisibleAt = now;
+        render();
+        return;
+      }
+
+      if (!best) {
+        if (now - autoLastVisibleAt > AUTO_EMPTY_GRACE_MS) {
+          if (autoDetectedElement || !activeContainerEl || !isHealthyLockedElement(activeContainerEl)) {
+            activeContainerEl = null;
+            autoDetectedElement = null;
+            autoDetectedVideo = null;
+            autoDetectedTrackKey = null;
+            autoNativeLastText = '';
+            autoNativeLastVideo = null;
+            if (isReplaceNativeMode()) domSwapper.restore();
+            if (settings.triggerMode === 'full-auto') bilingualSubtitleText = '';
+            render();
+          }
+        }
+        return;
+      }
+
+      const element = best.element;
+      if (!element || !document.documentElement.contains(element)) return;
+      const bestVideoRect = best.video?.getBoundingClientRect() ?? null;
+      if (isPlayerControlRegion(element, bestVideoRect) || isPlaybackTimeText(element.innerText || element.textContent || '')) {
+        autoTracks.delete(best.key);
+        if (autoDetectedTrackKey === best.key) {
+          activeContainerEl = null;
+          autoDetectedElement = null;
+          autoDetectedVideo = null;
+          autoDetectedTrackKey = null;
+          autoLastVisibleAt = now;
+          if (settings.triggerMode === 'full-auto') bilingualSubtitleText = '';
+          render();
+        }
+        return;
+      }
+
+      const changedElement = autoDetectedElement !== element;
+      const changedTrack = autoDetectedTrackKey !== best.key;
+
+      autoDetectedElement = element;
+      autoDetectedVideo = best.video;
+      autoDetectedTrackKey = best.key;
+      activeContainerEl = element;
+      autoLastVisibleAt = now;
+      autoNativeLastText = '';
+      autoNativeLastVideo = null;
+
+      if (changedElement || changedTrack) {
+        if (settings.triggerMode === 'full-auto') bilingualSubtitleText = '';
+        render();
+      }
+
+      const currentText = normalizeSubtitleText(element.innerText || element.textContent || '');
+      if (currentText && currentText !== lastObservedSubtitleText) {
+        void handleSubtitleTextChange(currentText);
+      }
+    };
+
+    const stopAutoDetectionMonitor = () => {
+      if (autoDetectionTimer !== null) {
+        window.clearInterval(autoDetectionTimer);
+        autoDetectionTimer = null;
+      }
+      autoDetectionRunning = false;
+    };
+
+    const startAutoDetectionMonitor = () => {
+      if (autoDetectionRunning || autoDetectionDisabled || settings.lockedSelector || !isAutomaticSubtitleMode()) return;
+      autoDetectionRunning = true;
+      autoDetectionTimer = window.setInterval(updateAutoDetection, AUTO_SCAN_INTERVAL_MS);
+      updateAutoDetection();
+    };
+
     const render = () => {
       const isFullAuto = settings.triggerMode === 'full-auto';
+      const activeRect = activeContainerEl?.getBoundingClientRect();
+      const activeRenderable = !!activeContainerEl &&
+        document.documentElement.contains(activeContainerEl) &&
+        !!activeRect && activeRect.width > 0 && activeRect.height > 0;
+
       reactRoot.render(
         <>
           <SubtitleOverlay
             glowTarget={settings.enableGlowEffect ? glowTargetEl : null}
-            lockedElement={activeContainerEl}
+            lockedElement={activeRenderable ? activeContainerEl : lockedVisualProxyEl}
             selectionCandidate={selectionCandidateEl}
             isSelecting={isSelecting}
             hoveredWordRect={hoveredWordRect}
@@ -1065,121 +1534,641 @@ export default defineContentScript({
         if (stored?.subanySettings) {
           settings = { ...DEFAULT_SETTINGS, ...(stored.subanySettings as Partial<ExtensionSettings>) };
           if (settings.lockedSelector) subtitleManager.setLockedSelector(settings.lockedSelector);
+          const storedAnchor = (stored as { subanyLockedAnchor?: LockedSubtitleAnchor }).subanyLockedAnchor;
+          if (storedAnchor && typeof storedAnchor === 'object') {
+            lockedSubtitleAnchor = storedAnchor;
+            lockedVideoSignature = storedAnchor.videoSignature || '';
+          }
         }
       } catch { /* use defaults */ }
       render();
       syncActiveContainer();
+      if (settings.lockedSelector) {
+        startLockedMonitor();
+      } else if (!autoDetectionDisabled && isAutomaticSubtitleMode()) {
+        startAutoDetectionMonitor();
+      }
     };
 
-    const reattachLockedContainer = (): HTMLElement | null => {
-      if (!settings.lockedSelector) {
-        const platformEl = subtitleManager.detectPlatformContainer();
-        if (platformEl && document.body.contains(platformEl)) {
-          const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
-            const r = v.getBoundingClientRect();
-            const er = platformEl.getBoundingClientRect();
-            return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
-          });
-          const grouped = combineSubtitleLines(platformEl, videoForElement?.getBoundingClientRect() ?? null);
-          if (activeContainerEl !== grouped) {
-            activeContainerEl = grouped;
-            render();
-          }
-          return grouped;
-        }
-        return activeContainerEl;
+    const getVideoSignature = (video: HTMLVideoElement | null): string => {
+      if (!video) return '';
+      const source = video.currentSrc || video.src || video.querySelector('source')?.getAttribute('src') || '';
+      const rect = video.getBoundingClientRect();
+      const ratio = rect.width > 0 && rect.height > 0 ? Math.round((rect.width / rect.height) * 1000) : 0;
+      return `${source}|${ratio}`;
+    };
+
+    const ensureLockedVisualProxy = () => {
+      if (lockedVisualProxyEl) return lockedVisualProxyEl;
+
+      const proxy = document.createElement('div');
+      proxy.id = 'subany-locked-visual-proxy';
+      proxy.setAttribute('aria-hidden', 'true');
+      proxy.style.position = 'fixed';
+      proxy.style.margin = '0';
+      proxy.style.padding = '0';
+      proxy.style.border = '0';
+      proxy.style.pointerEvents = 'none';
+      proxy.style.opacity = '0';
+      proxy.style.background = 'transparent';
+      proxy.style.visibility = 'visible';
+      proxy.style.zIndex = '2147483646';
+      proxy.style.boxSizing = 'border-box';
+      proxy.style.display = 'block';
+      document.documentElement.appendChild(proxy);
+
+      lockedVisualProxyEl = proxy;
+      lockedVisualProxyStyle = proxy.style;
+      return proxy;
+    };
+
+    const findCurrentLockedVideo = (): HTMLVideoElement | null => {
+      const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+      if (videos.length === 0) return null;
+
+      if (lockedVideoElement && document.documentElement.contains(lockedVideoElement)) {
+        const rect = lockedVideoElement.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) return lockedVideoElement;
       }
 
-      try {
-        const el = document.querySelector(settings.lockedSelector) as HTMLElement;
-        if (el && document.body.contains(el)) {
-          const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
-            const r = v.getBoundingClientRect();
-            const er = el.getBoundingClientRect();
-            return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
-          });
-          const grouped = combineSubtitleLines(el, videoForElement?.getBoundingClientRect() ?? null);
-          if (activeContainerEl !== grouped) {
-            activeContainerEl = grouped;
-            render();
-          }
-          return grouped;
+      if (lockedVideoSignature) {
+        const bySignature = videos.find((video) => getVideoSignature(video) === lockedVideoSignature);
+        if (bySignature) {
+          lockedVideoElement = bySignature;
+          return bySignature;
         }
-      } catch (_) { /* ignore */ }
+      }
 
-      const platformEl = subtitleManager.detectPlatformContainer();
-      if (platformEl && document.body.contains(platformEl)) {
-        const videoForElement = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
-          const r = v.getBoundingClientRect();
-          const er = platformEl.getBoundingClientRect();
-          return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
-        });
-        const grouped = combineSubtitleLines(platformEl, videoForElement?.getBoundingClientRect() ?? null);
-        if (activeContainerEl !== grouped) {
-          activeContainerEl = grouped;
-          render();
+      if (lockedSubtitleAnchor?.videoRect) {
+        const target = lockedSubtitleAnchor.videoRect;
+        let best: HTMLVideoElement | null = null;
+        let bestDistance = Infinity;
+
+        for (const video of videos) {
+          const rect = video.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const distance =
+            Math.abs(rect.left - target.left) +
+            Math.abs(rect.top - target.top) +
+            Math.abs(rect.width - target.width) +
+            Math.abs(rect.height - target.height);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = video;
+          }
         }
-        return grouped;
+
+        if (best) {
+          lockedVideoElement = best;
+          lockedVideoSignature = getVideoSignature(best);
+          return best;
+        }
       }
 
       return null;
     };
 
-    const lockContainer = async (element: HTMLElement, isAuto = false) => {
-      console.log('[Subany] 🔒 Locking container from element:', element);
-      const optimized = subtitleManager.findOptimalSubtitleContainer(element);
-      const videoForPoint = Array.from(document.querySelectorAll('video')).map((v) => v as HTMLVideoElement).find((v) => {
-        const r = v.getBoundingClientRect();
-        const er = element.getBoundingClientRect();
-        return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
-      });
-      const container = combineSubtitleLines(optimized, videoForPoint?.getBoundingClientRect() ?? null);
-      console.log('[Subany]   → Optimised/grouped container:', container);
-      const selector = subtitleManager.generateUniqueSelector(container);
-      activeContainerEl = container;
-      settings.lockedSelector = selector;
-      subtitleManager.setLockedSelector(selector);
-      await browser.storage.local.set({ subanySettings: settings });
-      triggerGlow(container);
-      setupVideoTimeTracking();
+    const updateLockedVisualProxy = () => {
+      if (!lockedSubtitleAnchor) return;
+      const proxy = ensureLockedVisualProxy();
+      const style = lockedVisualProxyStyle ?? proxy.style;
+
+      let rect: { left: number; top: number; width: number; height: number } | null = null;
+
+      if (activeContainerEl && document.documentElement.contains(activeContainerEl)) {
+        const live = activeContainerEl.getBoundingClientRect();
+        if (live.width > 0 && live.height > 0) {
+          rect = { left: live.left, top: live.top, width: live.width, height: live.height };
+        }
+      }
+
+      const currentLockedVideo = findCurrentLockedVideo();
+      if (!rect && currentLockedVideo) {
+        const vr = currentLockedVideo.getBoundingClientRect();
+        if (vr.width > 0 && vr.height > 0) {
+          rect = {
+            left: vr.left + lockedSubtitleAnchor.centerXRatio * vr.width - (lockedSubtitleAnchor.widthRatio * vr.width) / 2,
+            top: vr.top + lockedSubtitleAnchor.centerYRatio * vr.height - (lockedSubtitleAnchor.heightRatio * vr.height) / 2,
+            width: lockedSubtitleAnchor.widthRatio * vr.width,
+            height: lockedSubtitleAnchor.heightRatio * vr.height,
+          };
+        }
+      }
+
+      if (!rect && lockedSubtitleAnchor.videoRect) {
+        const vr = lockedSubtitleAnchor.videoRect;
+        rect = {
+          left: vr.left + lockedSubtitleAnchor.centerXRatio * vr.width - (lockedSubtitleAnchor.widthRatio * vr.width) / 2,
+          top: vr.top + lockedSubtitleAnchor.centerYRatio * vr.height - (lockedSubtitleAnchor.heightRatio * vr.height) / 2,
+          width: lockedSubtitleAnchor.widthRatio * vr.width,
+          height: lockedSubtitleAnchor.heightRatio * vr.height,
+        };
+      }
+
+      if (!rect) return;
+
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      style.left = `${Math.round(rect.left * 100) / 100}px`;
+      style.top = `${Math.round(rect.top * 100) / 100}px`;
+      style.width = `${Math.round(width * 100) / 100}px`;
+      style.height = `${Math.round(height * 100) / 100}px`;
+    };
+
+    const removeLockedVisualProxy = () => {
+      lockedVisualProxyEl?.remove();
+      lockedVisualProxyEl = null;
+      lockedVisualProxyStyle = null;
+    };
+
+    const getVideoForElement = (element: HTMLElement): HTMLVideoElement | null => {
+      const er = element.getBoundingClientRect();
+      if (er.width <= 0 || er.height <= 0) return null;
+
+      let best: HTMLVideoElement | null = null;
+      let bestOverlap = 0;
+      for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
+        const vr = video.getBoundingClientRect();
+        if (vr.width <= 0 || vr.height <= 0) continue;
+        const overlapWidth = Math.max(0, Math.min(er.right, vr.right) - Math.max(er.left, vr.left));
+        const overlapHeight = Math.max(0, Math.min(er.bottom, vr.bottom) - Math.max(er.top, vr.top));
+        const overlap = overlapWidth * overlapHeight;
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          best = video;
+        }
+      }
+      return best;
+    };
+
+    const rememberLockedAnchor = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const video = getVideoForElement(element);
+      const videoRect = video?.getBoundingClientRect() ?? null;
+      lockedVideoElement = video;
+      lockedVideoSignature = getVideoSignature(video);
+
+      lockedSubtitleAnchor = {
+        centerXRatio: videoRect && videoRect.width > 0
+          ? (rect.left + rect.width / 2 - videoRect.left) / videoRect.width
+          : (rect.left + rect.width / 2) / Math.max(1, window.innerWidth),
+        centerYRatio: videoRect && videoRect.height > 0
+          ? (rect.top + rect.height / 2 - videoRect.top) / videoRect.height
+          : (rect.top + rect.height / 2) / Math.max(1, window.innerHeight),
+        widthRatio: videoRect && videoRect.width > 0
+          ? rect.width / videoRect.width
+          : rect.width / Math.max(1, window.innerWidth),
+        heightRatio: videoRect && videoRect.height > 0
+          ? rect.height / videoRect.height
+          : rect.height / Math.max(1, window.innerHeight),
+        absoluteRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        videoRect: videoRect
+          ? { left: videoRect.left, top: videoRect.top, width: videoRect.width, height: videoRect.height }
+          : null,
+        videoSignature: lockedVideoSignature || getVideoSignature(video),
+        textHint: normalizeSubtitleText(element.innerText || ''),
+        updatedAt: performance.now(),
+      };
+      updateLockedVisualProxy();
+    };
+
+    const getCurrentLockedText = (element: HTMLElement | null): string => {
+      if (!element || !document.documentElement.contains(element)) return '';
+      return normalizeSubtitleText(element.innerText || element.textContent || '');
+    };
+
+    const isHealthyLockedElement = (element: HTMLElement | null): boolean => {
+      if (!element || !document.documentElement.contains(element)) return false;
+
+      const text = getCurrentLockedText(element);
+      if (!text || !isSubtitleText(text)) return false;
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+
+      // A healthy locked element should still look like a subtitle-sized
+      // visual object. This rejects player wrappers that survive a React
+      // subtitle rerender but temporarily contain no subtitle text.
+      if (rect.width > window.innerWidth * 0.96) return false;
+      if (rect.height > window.innerHeight * 0.30) return false;
+
+      const video = getVideoForElement(element);
+      if (video) {
+        const vr = video.getBoundingClientRect();
+        if (vr.width > 0 && vr.height > 0) {
+          if (rect.width >= vr.width * 0.96) return false;
+          if (rect.height >= vr.height * 0.45) return false;
+        }
+      }
+
+      return true;
+    };
+
+    const getLockedGeometry = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const video = getVideoForElement(element);
+      const videoRect = video?.getBoundingClientRect() ?? null;
+
+      return {
+        rect,
+        video,
+        videoRect,
+      };
+    };
+
+    const scoreLockedReplacement = (candidate: HTMLElement): number => {
+      if (!lockedSubtitleAnchor) return -Infinity;
+      if (!isUsableSubtitleLine(candidate, null)) return -Infinity;
+
+      const candidateVideo = getVideoForElement(candidate);
+      const candidateVideoRect = candidateVideo?.getBoundingClientRect() ?? null;
+      const rect = candidate.getBoundingClientRect();
+      const anchor = lockedSubtitleAnchor;
+      const currentLockedVideo = findCurrentLockedVideo();
+      const expectedSignature = lockedVideoSignature || anchor.videoSignature || (currentLockedVideo ? getVideoSignature(currentLockedVideo) : '');
+
+      if (expectedSignature) {
+        if (!candidateVideo) return -Infinity;
+        const candidateSignature = getVideoSignature(candidateVideo);
+        if (!candidateSignature || candidateSignature !== expectedSignature) return -Infinity;
+      }
+
+      let expectedX: number;
+      let expectedY: number;
+      let expectedWidth: number;
+      let expectedHeight: number;
+
+      if (candidateVideoRect && candidateVideoRect.width > 0 && candidateVideoRect.height > 0) {
+        expectedX = candidateVideoRect.left + anchor.centerXRatio * candidateVideoRect.width;
+        expectedY = candidateVideoRect.top + anchor.centerYRatio * candidateVideoRect.height;
+        expectedWidth = anchor.widthRatio * candidateVideoRect.width;
+        expectedHeight = anchor.heightRatio * candidateVideoRect.height;
+      } else {
+        expectedX = anchor.centerXRatio * window.innerWidth;
+        expectedY = anchor.centerYRatio * window.innerHeight;
+        expectedWidth = anchor.widthRatio * window.innerWidth;
+        expectedHeight = anchor.heightRatio * window.innerHeight;
+      }
+
+      const candidateCx = rect.left + rect.width / 2;
+      const candidateCy = rect.top + rect.height / 2;
+      const distance = Math.hypot(candidateCx - expectedX, candidateCy - expectedY);
+      const scale = Math.max(22, Math.min(window.innerWidth, window.innerHeight) * 0.11);
+
+      let score = 100 - Math.min(120, (distance / scale) * 48);
+
+      const widthRatio = rect.width / Math.max(1, expectedWidth);
+      if (widthRatio > 0.35 && widthRatio < 2.8) score += 20;
+      else score -= 30;
+
+      const heightRatio = rect.height / Math.max(1, expectedHeight);
+      if (heightRatio > 0.25 && heightRatio < 3.2) score += 10;
+
+      const text = getCurrentLockedText(candidate);
+      if (anchor.textHint && text) {
+        if (text === anchor.textHint) {
+          score += 35;
+        } else if (text.length >= 2 && anchor.textHint.length >= 2) {
+          const prefixLength = Math.min(18, text.length, anchor.textHint.length);
+          if (prefixLength >= 4 && text.slice(0, prefixLength) === anchor.textHint.slice(0, prefixLength)) {
+            score += 10;
+          }
+        }
+      }
+
+      // A replacement should be somewhere in the same video/player as the
+      // original lock. This is especially important on pages with multiple
+      // video cards or recommendation players.
+      if (anchor.videoRect && !candidateVideo) return score - 60;
+
+      if (candidateVideo && anchor.videoRect) {
+        const vr = anchor.videoRect;
+        const sameVideoPosition =
+          Math.abs(candidateVideoRect!.left - vr.left) < Math.max(40, vr.width * 0.15) &&
+          Math.abs(candidateVideoRect!.top - vr.top) < Math.max(40, vr.height * 0.15) &&
+          Math.abs(candidateVideoRect!.width - vr.width) < Math.max(120, vr.width * 0.20) &&
+          Math.abs(candidateVideoRect!.height - vr.height) < Math.max(120, vr.height * 0.20);
+        if (sameVideoPosition) score += 18;
+        else score -= 24;
+      }
+
+      return score;
+    };
+
+    const findLockedReplacement = (): HTMLElement | null => {
+      if (!lockedSubtitleAnchor) return null;
+
+      const currentLockedVideo = findCurrentLockedVideo();
+      if (lockedSubtitleAnchor.videoRect && !currentLockedVideo && !lockedVideoSignature && !lockedSubtitleAnchor.videoSignature) {
+        return null;
+      }
+
+      const allElements = getAllElements(document);
+      const candidates: HTMLElement[] = [];
+
+      for (const el of allElements) {
+        if (el === activeContainerEl) continue;
+        if (!isUsableSubtitleLine(el, null)) continue;
+
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.width > window.innerWidth * 0.96 || r.height > window.innerHeight * 0.30) continue;
+
+        candidates.push(el);
+      }
+
+      let best: HTMLElement | null = null;
+      let bestScore = 24;
+
+      for (const candidate of candidates) {
+        const score = scoreLockedReplacement(candidate);
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+
+      if (!best) return null;
+
+      const video = getVideoForElement(best);
+      const grouped = combineSubtitleLines(best, video?.getBoundingClientRect() ?? null);
+
+      if (!isHealthyLockedElement(grouped)) {
+        // The line itself can be healthy while the calculated common ancestor
+        // is actually a large player wrapper. Fall back to the best line.
+        if (!isHealthyLockedElement(best)) return null;
+      }
+
+      const finalElement = isHealthyLockedElement(grouped) ? grouped : best;
+      rememberLockedAnchor(finalElement);
+      return finalElement;
+    };
+
+    const setLockedActiveContainer = (element: HTMLElement, updateAnchor = true) => {
+      if (!element || !document.documentElement.contains(element)) return;
+      activeContainerEl = element;
+      if (updateAnchor) rememberLockedAnchor(element);
+      else updateLockedVisualProxy();
       render();
     };
 
+    const tryRecoverLockedContainer = (): HTMLElement | null => {
+      if (!settings.lockedSelector && !lockedSubtitleAnchor) return activeContainerEl;
+
+      // 1. Fast path, but ONLY if the selector still resolves to a genuine,
+      // non-empty subtitle. A React/MUI player may keep the exact same wrapper
+      // alive while temporarily removing/replacing its caption text.
+      if (settings.lockedSelector) {
+        try {
+          const el = document.querySelector(settings.lockedSelector) as HTMLElement | null;
+          if (isHealthyLockedElement(el)) {
+            // After the health check, el is guaranteed non‑null.
+            const healthyEl = el as HTMLElement;
+            const video = getVideoForElement(healthyEl);
+            const grouped = combineSubtitleLines(healthyEl, video?.getBoundingClientRect() ?? null);
+            if (isHealthyLockedElement(grouped)) {
+              setLockedActiveContainer(grouped);
+              return grouped;
+            }
+          }
+        } catch (_) {
+          // Invalid/stale selector. Continue to logical recovery.
+        }
+      }
+
+      // 2. The selector may be dead, or may point to a stale/empty React node.
+      // Search by the remembered visual identity instead of throwing away the
+      // user's lock.
+      const replacement = findLockedReplacement();
+      if (replacement) {
+        setLockedActiveContainer(replacement);
+        return replacement;
+      }
+
+      // 3. No visible cue right now. Keep the logical lock alive through the
+      // empty-cue gap. The next mutation/timeupdate/media event will retry.
+      return activeContainerEl;
+    };
+
+    const maintainLockedContainer = (force = false) => {
+      if ((!settings.lockedSelector && !lockedSubtitleAnchor) || isRefreshingLockedContainer) return;
+
+      const now = performance.now();
+      if (!force && now - lastLockedReattachAt < 70) return;
+      lastLockedReattachAt = now;
+
+      updateLockedVisualProxy();
+      const activeHealthy = isHealthyLockedElement(activeContainerEl);
+
+      let needsRecovery = !activeHealthy;
+
+      // A selector resolving is NOT enough. This specifically fixes players
+      // that leave a stale wrapper mounted while its actual subtitle child is
+      // removed for a fraction of a second.
+      if (!needsRecovery && settings.lockedSelector) {
+        try {
+          const selectorTarget = document.querySelector(settings.lockedSelector) as HTMLElement | null;
+          if (!isHealthyLockedElement(selectorTarget)) {
+            needsRecovery = true;
+          }
+        } catch (_) {
+          needsRecovery = true;
+        }
+      }
+
+      // Even when the current element is healthy, re-group its stacked lines.
+      // This catches players that keep one line and replace only the other.
+      if (!needsRecovery && activeContainerEl) {
+        const video = getVideoForElement(activeContainerEl);
+        const grouped = combineSubtitleLines(activeContainerEl, video?.getBoundingClientRect() ?? null);
+        if (isHealthyLockedElement(grouped)) {
+          if (grouped !== activeContainerEl) {
+            activeContainerEl = grouped;
+            if (force) rememberLockedAnchor(grouped);
+            render();
+          } else if (force) {
+            rememberLockedAnchor(grouped);
+          }
+          return;
+        }
+        needsRecovery = true;
+      }
+
+      if (!needsRecovery) return;
+
+      isRefreshingLockedContainer = true;
+      try {
+        tryRecoverLockedContainer();
+        updateLockedVisualProxy();
+        render();
+      } finally {
+        isRefreshingLockedContainer = false;
+      }
+    };
+
+    const stopLockedMonitor = () => {
+      if (lockedMonitorTimer !== null) {
+        window.clearInterval(lockedMonitorTimer);
+        lockedMonitorTimer = null;
+      }
+      for (const binding of lockedVideoEvents) {
+        binding.video.removeEventListener(binding.event, binding.handler);
+      }
+      lockedVideoEvents = [];
+    };
+
+    const startLockedMonitor = () => {
+      stopLockedMonitor();
+
+      // MutationObserver + media events catch most rebuilds. The lightweight
+      // interval handles players that mutate through shadow/native internals
+      // without producing a useful DOM mutation, and it also catches brief
+      // cue teardown/recreation windows during seeking/rate changes.
+      lockedMonitorTimer = window.setInterval(() => maintainLockedContainer(), 140);
+
+      const events = [
+        'ratechange', 'seeking', 'seeked', 'playing', 'play', 'pause', 'canplay',
+        'loadedmetadata', 'durationchange', 'emptied', 'waiting', 'stalled',
+        'timeupdate', 'progress',
+      ];
+
+      for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
+        for (const event of events) {
+          const handler = (() => { maintainLockedContainer(true); }) as EventListener;
+          video.addEventListener(event, handler, { passive: true });
+          lockedVideoEvents.push({ video, event, handler });
+        }
+      }
+    };
+
+    const reattachLockedContainer = (): HTMLElement | null => {
+      return tryRecoverLockedContainer();
+    };
+
+    const isHealthySelectionContainer = (element: HTMLElement, videoRect: DOMRect | null): boolean => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      if (rect.width > window.innerWidth * 0.96) return false;
+      if (rect.height > window.innerHeight * 0.30) return false;
+      if (!isSubtitleText(normalizeSubtitleText(element.innerText || element.textContent || ''))) return false;
+
+      if (videoRect) {
+        if (rect.width >= videoRect.width * 0.96) return false;
+        if (rect.height >= videoRect.height * 0.45) return false;
+        if (rect.right < videoRect.left - 30 || rect.left > videoRect.right + 30) return false;
+        if (rect.bottom < videoRect.top - 30 || rect.top > videoRect.bottom + 30) return false;
+      }
+
+      return true;
+    };
+
+    const lockContainer = async (element: HTMLElement, isAuto = false) => {
+      if (!element || !document.documentElement.contains(element)) return;
+
+      const elementRect = element.getBoundingClientRect();
+      if (elementRect.width <= 0 || elementRect.height <= 0) return;
+
+      const videoForElement = getVideoForElement(element);
+      const videoRect = videoForElement?.getBoundingClientRect() ?? null;
+      const grouped = combineSubtitleLines(element, videoRect);
+
+      // A user click is already a strong identification signal. Do not pass it
+      // through a generic container optimiser, because that optimiser can choose
+      // a large player ancestor or another visually unrelated element.
+      const container = isUsableSubtitleLine(grouped, videoRect) &&
+        isHealthySelectionContainer(grouped, videoRect)
+        ? grouped
+        : element;
+
+      const finalRect = container.getBoundingClientRect();
+      if (finalRect.width <= 0 || finalRect.height <= 0) return;
+
+      activeContainerEl = container;
+      autoDetectedElement = isAuto ? container : null;
+      autoDetectedVideo = isAuto ? videoForElement ?? getVideoForElement(container) : null;
+      autoDetectedTrackKey = isAuto ? makeAutoRegionKey(container, autoDetectedVideo) : null;
+
+      if (isAuto) {
+        subtitleManager.setLockedSelector(null);
+        stopLockedMonitor();
+      } else {
+        autoDetectionDisabled = true;
+        stopAutoDetectionMonitor();
+        const selector = subtitleManager.generateUniqueSelector(container);
+        settings.lockedSelector = selector;
+        subtitleManager.setLockedSelector(selector);
+        rememberLockedAnchor(container);
+        await browser.storage.local.set({
+          subanySettings: settings,
+          subanyLockedAnchor: lockedSubtitleAnchor,
+        });
+        startLockedMonitor();
+      }
+
+      triggerGlow(container);
+      setupVideoTimeTracking();
+      updateLockedVisualProxy();
+      render();
+    };
     const unlockContainer = async () => {
       domSwapper.restore();
       activeContainerEl = null;
+      autoDetectedElement = null;
+      autoDetectedVideo = null;
+      autoDetectedTrackKey = null;
+      autoTracks.clear();
+      autoLastVisibleAt = 0;
+      autoNativeLastText = '';
+      autoNativeLastVideo = null;
+      autoNativeTranslationToken++;
+
       settings.lockedSelector = null;
       subtitleManager.setLockedSelector(null);
+      lockedSubtitleAnchor = null;
+      lockedVideoElement = null;
+      lockedVideoSignature = '';
+      stopLockedMonitor();
+      removeLockedVisualProxy();
+      stopAutoDetectionMonitor();
+
+      // User explicitly detached. Do not let an automatic heuristic immediately
+      // grab another random container on the next mutation/event. The user can
+      // start selection again when they want a new lock.
+      autoDetectionDisabled = true;
+
       bilingualSubtitleText = '';
       lastObservedSubtitleText = '';
       if (videoTimeUpdateHandler) {
         document.removeEventListener('timeupdate', videoTimeUpdateHandler);
         videoTimeUpdateHandler = null;
       }
-      await browser.storage.local.set({ subanySettings: settings });
+      await browser.storage.local.set({
+        subanySettings: settings,
+        subanyLockedAnchor: null,
+      });
       render();
     };
 
     const syncActiveContainer = () => {
-      const reattached = reattachLockedContainer();
-      if (reattached) {
-        if (!glowTargetEl) triggerGlow(reattached);
-        return;
-      }
-
       if (settings.lockedSelector) {
+        const reattached = reattachLockedContainer();
+        if (reattached) {
+          stopAutoDetectionMonitor();
+          if (!glowTargetEl) triggerGlow(reattached);
+          return;
+        }
+        // The selector can be temporarily stale while a player is rebuilding.
+        // Keep the logical lock alive and let the locked monitor recover it.
+        startLockedMonitor();
         return;
       }
 
-      const platformEl = subtitleManager.detectPlatformContainer();
-      if (platformEl) {
-        void lockContainer(platformEl, true);
-        return;
-      }
+      if (autoDetectionDisabled) return;
 
-      const heuristicEl = subtitleManager.detectSmartHeuristicContainer() || findBestSubtitleContainer();
-      if (heuristicEl) {
-        void lockContainer(heuristicEl, true);
+      if (isAutomaticSubtitleMode()) {
+        startAutoDetectionMonitor();
       }
     };
 
@@ -1208,18 +2197,16 @@ export default defineContentScript({
     };
 
     const onDomChange = debounce(() => {
-      const reattached = reattachLockedContainer();
-      if (reattached) {
-        activeContainerEl = reattached;
-      } else if (!settings.lockedSelector) {
-        const platformEl = subtitleManager.detectPlatformContainer();
-        if (platformEl) {
-          void lockContainer(platformEl, true);
-          return;
-        }
+      if (settings.lockedSelector) {
+        maintainLockedContainer(true);
+      } else if (!autoDetectionDisabled && isAutomaticSubtitleMode()) {
+        updateAutoDetection();
       }
 
       const currentText = activeContainerEl?.innerText?.trim() || '';
+
+      // A transient empty subtitle is a normal cue boundary. Keep the lock
+      // alive instead of treating the empty frame as a lost container.
       if (!currentText) {
         if (domSwapper.hasSwapped()) domSwapper.restore();
         bilingualSubtitleText = '';
@@ -1231,7 +2218,7 @@ export default defineContentScript({
       if (currentText !== lastObservedSubtitleText) {
         void handleSubtitleTextChange(currentText);
       }
-    }, 350);
+    }, 180);
 
     const subtitleObserver = new MutationObserver(onDomChange);
     subtitleObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -1253,13 +2240,10 @@ export default defineContentScript({
       }
 
       videoTimeUpdateHandler = () => {
-        const reattached = reattachLockedContainer();
-        if (!reattached && !settings.lockedSelector) {
-          const platformEl = subtitleManager.detectPlatformContainer();
-          if (platformEl) {
-            void lockContainer(platformEl, true);
-            return;
-          }
+        if (settings.lockedSelector) {
+          maintainLockedContainer(true);
+        } else if (!autoDetectionDisabled && isAutomaticSubtitleMode()) {
+          updateAutoDetection();
         }
 
         if (!activeContainerEl) return;
@@ -1289,6 +2273,7 @@ export default defineContentScript({
     };
 
     const startSelectionFlow = () => {
+      stopAutoDetectionMonitor();
       if (settings.selectionMode === 'pin-drag') {
         if (pinSelectorInstance) pinSelectorInstance.stop();
         pinSelectorInstance = new PinSelector({
@@ -1304,7 +2289,13 @@ export default defineContentScript({
             const chosen = findGenuineSubtitleCandidate(el.getBoundingClientRect().left + 10, el.getBoundingClientRect().top + 10) || el;
             void lockContainer(chosen);
           },
-          onCancel: () => { selectionCandidateEl = null; virtualSelectionHit = null; hoveredWordRect = null; render(); },
+          onCancel: () => {
+            selectionCandidateEl = null;
+            virtualSelectionHit = null;
+            hoveredWordRect = null;
+            render();
+            if (!settings.lockedSelector && !autoDetectionDisabled && isAutomaticSubtitleMode()) startAutoDetectionMonitor();
+          },
         });
         pinSelectorInstance.start();
       } else {
@@ -1375,7 +2366,15 @@ export default defineContentScript({
         pinSelectorInstance = null;
       }
       render();
+      if (!settings.lockedSelector && !autoDetectionDisabled && isAutomaticSubtitleMode()) startAutoDetectionMonitor();
     };
+
+    window.addEventListener('resize', () => {
+      if (settings.lockedSelector || lockedSubtitleAnchor) {
+        updateLockedVisualProxy();
+        maintainLockedContainer(true);
+      }
+    }, { passive: true });
 
     window.addEventListener('mousemove', onSelectionMouseMove, true);
     window.addEventListener('click', onSelectionClick, true);
@@ -1391,6 +2390,7 @@ export default defineContentScript({
           pinSelectorInstance = null;
         }
         render();
+        if (!settings.lockedSelector && !autoDetectionDisabled && isAutomaticSubtitleMode()) startAutoDetectionMonitor();
       }
     }, true);
 
@@ -1474,7 +2474,6 @@ export default defineContentScript({
       rangeAnchorY = null;
       return TextExtractor.getWord(e.clientX, e.clientY, activeContainerEl);
     };
-
 
     // Extraction that can work when the visible subtitle has no DOM node.
     // Native TextTrack gives us the full cue text, so we translate the cue
@@ -1570,12 +2569,31 @@ export default defineContentScript({
 
     browser.storage.onChanged.addListener((changes) => {
       if (changes.subanySettings?.newValue) {
-        const oldReplace = settings.replaceNativeSubtitles || settings.triggerMode === 'replace-native';
+        const oldSettings = settings;
+        const oldReplace = oldSettings.replaceNativeSubtitles || oldSettings.triggerMode === 'replace-native';
         settings = { ...DEFAULT_SETTINGS, ...(changes.subanySettings.newValue as Partial<ExtensionSettings>) };
         const newReplace = settings.replaceNativeSubtitles || settings.triggerMode === 'replace-native';
+
         if (oldReplace && !newReplace) {
           domSwapper.restore();
         }
+
+        // Changing modes is an explicit configuration action, so allow auto
+        // detection to start again. A user pressing the overlay's unlock button
+        // does NOT change the mode and therefore remains detached.
+        if (oldSettings.triggerMode !== settings.triggerMode || oldSettings.replaceNativeSubtitles !== settings.replaceNativeSubtitles) {
+          autoDetectionDisabled = false;
+          autoTracks.clear();
+        }
+
+        if (settings.lockedSelector) {
+          stopAutoDetectionMonitor();
+          startLockedMonitor();
+        } else {
+          stopLockedMonitor();
+          if (!autoDetectionDisabled && isAutomaticSubtitleMode()) startAutoDetectionMonitor();
+        }
+
         if (settings.triggerMode !== 'full-auto') bilingualSubtitleText = '';
         render();
         syncActiveContainer();
@@ -1586,7 +2604,7 @@ export default defineContentScript({
       if (message?.type === 'START_SELECTION') { startSelectionFlow(); sendResponse({ success: true }); return true; }
       if (message?.type === 'RESET_SELECTION') { void unlockContainer(); sendResponse({ success: true }); return true; }
       if (message?.type === 'GET_STATUS') {
-        sendResponse({ hasLockedContainer: !!activeContainerEl, selector: settings.lockedSelector, settings });
+        sendResponse({ hasLockedContainer: !!settings.lockedSelector, selector: settings.lockedSelector, settings });
         return true;
       }
       return undefined;
