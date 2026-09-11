@@ -1,0 +1,123 @@
+// locking/LockedAnchor.ts
+
+import { getVideoForElement, getVideoSignature } from '../../utils/dom';
+import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
+import type { LockedSubtitleAnchor } from '../state/types';
+
+/**
+ * Snapshot the current visual identity of a subtitle element.
+ *
+ * The snapshot is expressed as ratios relative to the containing video (when
+ * one is available) so it survives player resizes and layout shifts. Falls
+ * back to viewport ratios when no video is found.
+ *
+ * Returns null when the element has no usable geometry.
+ */
+export function createLockedAnchor(element: HTMLElement): LockedSubtitleAnchor | null {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  const video = getVideoForElement(element);
+  const videoRect = video?.getBoundingClientRect() ?? null;
+
+  const centerXRatio =
+    videoRect && videoRect.width > 0
+      ? (rect.left + rect.width / 2 - videoRect.left) / videoRect.width
+      : (rect.left + rect.width / 2) / Math.max(1, window.innerWidth);
+
+  const centerYRatio =
+    videoRect && videoRect.height > 0
+      ? (rect.top + rect.height / 2 - videoRect.top) / videoRect.height
+      : (rect.top + rect.height / 2) / Math.max(1, window.innerHeight);
+
+  const widthRatio =
+    videoRect && videoRect.width > 0
+      ? rect.width / videoRect.width
+      : rect.width / Math.max(1, window.innerWidth);
+
+  const heightRatio =
+    videoRect && videoRect.height > 0
+      ? rect.height / videoRect.height
+      : rect.height / Math.max(1, window.innerHeight);
+
+  return {
+    centerXRatio,
+    centerYRatio,
+    widthRatio,
+    heightRatio,
+    absoluteRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    videoRect: videoRect
+      ? { left: videoRect.left, top: videoRect.top, width: videoRect.width, height: videoRect.height }
+      : null,
+    videoSignature: getVideoSignature(video),
+    textHint: normalizeSubtitleText(element.innerText || ''),
+    updatedAt: performance.now(),
+  };
+}
+
+/**
+ * Read the currently visible subtitle text of a locked element, normalized.
+ * Returns '' when the element is gone or empty.
+ */
+export function getCurrentLockedText(element: HTMLElement | null): string {
+  if (!element || !document.documentElement.contains(element)) return '';
+  return normalizeSubtitleText(element.innerText || element.textContent || '');
+}
+
+/**
+ * A locked element is "healthy" when it still looks like a subtitle-sized
+ * visual object that currently contains real subtitle text.
+ *
+ * This specifically rejects the case where a React/MUI player keeps the
+ * wrapper node alive while its caption text is temporarily removed — the
+ * wrapper survives but is no longer a valid subtitle.
+ */
+export function isHealthyLockedElement(element: HTMLElement | null): boolean {
+  if (!element || !document.documentElement.contains(element)) return false;
+
+  const text = getCurrentLockedText(element);
+  if (!text || !isSubtitleText(text)) return false;
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+
+  // A healthy locked element should still look like a subtitle-sized
+  // visual object.
+  if (rect.width > window.innerWidth * 0.96) return false;
+  if (rect.height > window.innerHeight * 0.30) return false;
+
+  const video = getVideoForElement(element);
+  if (video) {
+    const vr = video.getBoundingClientRect();
+    if (vr.width > 0 && vr.height > 0) {
+      if (rect.width >= vr.width * 0.96) return false;
+      if (rect.height >= vr.height * 0.45) return false;
+    }
+  }
+
+  return true;
+}
+
+
+/**
+ * Stricter than `isHealthyLockedElement`: in addition to the size and text
+ * checks, requires the element to be near the video it overlaps. Used when
+ * deciding whether a freshly-grouped candidate is suitable as a new lock
+ * target (as opposed to validating an existing lock).
+ */
+export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect | null): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  if (rect.width > window.innerWidth * 0.96) return false;
+  if (rect.height > window.innerHeight * 0.30) return false;
+  if (!isSubtitleText(normalizeSubtitleText(element.innerText || element.textContent || ''))) return false;
+
+  if (videoRect) {
+    if (rect.width >= videoRect.width * 0.96) return false;
+    if (rect.height >= videoRect.height * 0.45) return false;
+    if (rect.right < videoRect.left - 30 || rect.left > videoRect.right + 30) return false;
+    if (rect.bottom < videoRect.top - 30 || rect.top > videoRect.bottom + 30) return false;
+  }
+
+  return true;
+}
