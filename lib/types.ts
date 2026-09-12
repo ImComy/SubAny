@@ -1,6 +1,7 @@
 export type TranslationEngine = 'google-gtx' | 'libretranslate' | 'mymemory' | 'lingva';
 
 export type TriggerMode = 'hover' | 'click' | 'full-auto' | 'replace-native';
+export type SubtitleProviderId = 'opensubtitles' | 'subdl';
 
 export interface ExtensionSettings {
   settingsSchemaVersion: number;
@@ -12,6 +13,10 @@ export interface ExtensionSettings {
   enableGlowEffect: boolean;
   replaceNativeSubtitles: boolean;
   lockedSelector: string | null;
+  subtitleProvider: SubtitleProviderId;
+  subtitleApiKey: string;
+  subtitleDelayMs: number;
+  subtitleEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -24,6 +29,10 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   enableGlowEffect: true,
   replaceNativeSubtitles: false,
   lockedSelector: null,
+  subtitleProvider: 'opensubtitles',
+  subtitleApiKey: '',
+  subtitleDelayMs: 0,
+  subtitleEnabled: true,
 };
 
 export interface TranslateRequestMessage {

@@ -2,7 +2,7 @@ import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  browser: '/usr/bin/brave-browser',
+  browser: 'chrome',
   modules: ['@wxt-dev/module-react'],
   manifest: {
     name: 'SubAny',

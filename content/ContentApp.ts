@@ -34,6 +34,8 @@ import { VideoOverlayController } from './video/VideoOverlayController';
 
 import { ExtensionRoot } from './ui/ExtensionRoot';
 import { ContentRenderer } from './ui/ContentRenderer';
+import { SubtitleTrackController } from './subtitles/SubtitleTrackController';
+import type { SubtitleTrack } from './subtitles/types';
 
 /**
  * Top-level orchestrator for the content script.
@@ -65,6 +67,7 @@ export class ContentApp {
   private readonly videoController: VideoController;
   private readonly domSwapper: DomTextSwapper;
   private readonly overlayController: VideoOverlayController;
+  private readonly subtitleTrackController: SubtitleTrackController;
 
   private readonly autoDetect: AutoDetectController;
   private readonly lockController: LockController;
@@ -88,6 +91,7 @@ export class ContentApp {
     this.videoController = new VideoController();
     this.domSwapper = new DomTextSwapper();
     this.overlayController = new VideoOverlayController(this.videoController);
+    this.subtitleTrackController = new SubtitleTrackController(this.state);
 
     this.renderer = new ContentRenderer(this.state, this.extensionRoot, {
       onUnlock: () => { void this.unlockContainer(); },
@@ -165,12 +169,14 @@ export class ContentApp {
     }));
     this.handles.push(startStorageEvents(s, {
       onSettingsChanged: (next) => this.handleSettingsChanged(next),
+      onSubtitleTrackChanged: (track) => this.subtitleTrackController.apply(track),
     }));
     this.handles.push(startRuntimeMessages(s, {
       onStartSelection: () => {
         if (this.canOwnSelectionFrame()) startSelection(s, this.selectionDeps);
       },
       onResetSelection: () => { void this.unlockContainer(); },
+      onApplySubtitle: (track) => this.subtitleTrackController.apply(track),
     }));
 
     window.addEventListener('resize', this.onResize, { passive: true });
@@ -199,6 +205,7 @@ export class ContentApp {
     this.autoDetect.stop();
     this.releaseAutoDetectionLease();
     stopVideoMonitor();
+    this.subtitleTrackController.dispose();
 
     this.state.onRender = null;
     this.extensionRoot.dispose();
@@ -240,7 +247,7 @@ export class ContentApp {
       // Load both keys at once. The original asked only for `subanySettings`
       // and then read `subanyLockedAnchor` off the result — which was never
       // present, so the anchor was silently never restored. Fixed here.
-      const stored = await browser.storage.local.get(['subanySettings', 'subanyLockedAnchor']);
+      const stored = await browser.storage.local.get(['subanySettings', 'subanyLockedAnchor', 'subanySubtitleTrack']);
 
       if (stored?.subanySettings) {
         s.settings = { ...DEFAULT_SETTINGS, ...(stored.subanySettings as Partial<ExtensionSettings>) };
@@ -254,6 +261,9 @@ export class ContentApp {
         s.lockedSubtitleAnchor = storedAnchor;
         s.lockedVideoSignature = storedAnchor.videoSignature || '';
       }
+
+      const storedTrack = stored?.subanySubtitleTrack as { track?: SubtitleTrack } | undefined;
+      if (storedTrack?.track) this.subtitleTrackController.apply(storedTrack.track);
     } catch (_) { /* fall back to defaults */ }
 
     s.notify();

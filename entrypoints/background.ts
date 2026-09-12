@@ -5,6 +5,7 @@ import {
   type TranslateResponseMessage,
   type TranslationEngine,
 } from '../lib/types';
+import { downloadSubtitle, searchSubtitles, type SubtitleDownloadMessage, type SubtitleSearchMessage } from '../content/subtitles';
 
 // In-memory cache for ultra-fast repetitive hover lookups
 const memoryCache = new Map<string, string>();
@@ -200,6 +201,21 @@ export default defineBackground(() => {
         const tabId = sender.tab?.id;
         if (typeof tabId === 'number') releaseAutoDetectionLease(tabId, sender.frameId ?? 0);
         sendResponse({ released: true });
+        return true;
+      }
+
+      if (rawMessage?.action === 'subtitle-search' || rawMessage?.action === 'subtitle-download') {
+        void (async () => {
+          try {
+            const settings = await getStoredSettings();
+            const result = rawMessage.action === 'subtitle-search'
+              ? await searchSubtitles(rawMessage as SubtitleSearchMessage, settings.subtitleApiKey)
+              : await downloadSubtitle(rawMessage as SubtitleDownloadMessage, settings.subtitleApiKey);
+            sendResponse({ ok: true, result });
+          } catch (error: any) {
+            sendResponse({ ok: false, error: error?.message || String(error) });
+          }
+        })();
         return true;
       }
 

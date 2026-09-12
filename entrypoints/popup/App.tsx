@@ -6,10 +6,11 @@ import {
   type TranslationEngine,
   type TriggerMode,
 } from '../../lib/types';
+import type { SubtitleSearchResult } from '../../content/subtitles';
 import './style.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'translate' | 'settings'>('translate');
+  const [activeTab, setActiveTab] = useState<'translate' | 'subtitles' | 'settings'>('translate');
   const [settings, setSettings] = useState<ExtensionSettings>(DEFAULT_SETTINGS);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [tabContainerStatus, setTabContainerStatus] = useState<{
@@ -17,6 +18,9 @@ export default function App() {
     selector?: string | null;
   }>({ hasLockedContainer: false });
   const [isSelecting, setIsSelecting] = useState(false);
+  const [subtitleQuery, setSubtitleQuery] = useState('');
+  const [subtitleResults, setSubtitleResults] = useState<SubtitleSearchResult[]>([]);
+  const [subtitleBusy, setSubtitleBusy] = useState(false);
 
   // Load settings on startup
   useEffect(() => {
@@ -108,6 +112,43 @@ export default function App() {
     }
   };
 
+  const searchSubtitles = async () => {
+    if (!subtitleQuery.trim()) return;
+    setSubtitleBusy(true);
+    setStatusMessage(null);
+    try {
+      const response = await browser.runtime.sendMessage({
+        action: 'subtitle-search',
+        request: { query: subtitleQuery.trim(), language: settings.sourceLanguage === 'auto' ? 'en' : settings.sourceLanguage, provider: settings.subtitleProvider },
+      }) as { ok: boolean; result?: SubtitleSearchResult[]; error?: string };
+      if (!response.ok) throw new Error(response.error || 'Subtitle search failed.');
+      setSubtitleResults(response.result || []);
+      setStatusMessage(`${response.result?.length || 0} subtitle tracks found.`);
+    } catch (error: any) {
+      setStatusMessage(error?.message || 'Subtitle search failed.');
+    } finally {
+      setSubtitleBusy(false);
+    }
+  };
+
+  const applySubtitle = async (result: SubtitleSearchResult) => {
+    setSubtitleBusy(true);
+    try {
+      const response = await browser.runtime.sendMessage({ action: 'subtitle-download', result }) as { ok: boolean; result?: unknown; error?: string };
+      if (!response.ok || !response.result) throw new Error(response.error || 'Subtitle download failed.');
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) throw new Error('No active video tab found.');
+      await browser.storage.local.set({
+        subanySubtitleTrack: { track: response.result, t: Date.now() },
+      });
+      setStatusMessage('Subtitle track applied to the active video.');
+    } catch (error: any) {
+      setStatusMessage(error?.message || 'Could not apply subtitle track.');
+    } finally {
+      setSubtitleBusy(false);
+    }
+  };
+
   return (
     <div className="w-[360px] min-h-[470px] bg-slate-950 text-slate-100 font-sans p-5 select-none antialiased flex flex-col justify-between">
       {/* Top Header */}
@@ -139,6 +180,17 @@ export default function App() {
               }`}
             >
               Translate
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('subtitles')}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                activeTab === 'subtitles'
+                  ? 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Subtitles
             </button>
             <button
               type="button"
@@ -329,6 +381,61 @@ export default function App() {
                 </button>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'subtitles' && (
+          <div className="mt-4 space-y-3 text-xs">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Subtitle provider</label>
+              <select
+                value={settings.subtitleProvider}
+                onChange={(e) => updateSetting('subtitleProvider', e.target.value as ExtensionSettings['subtitleProvider'])}
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100"
+              >
+                <option value="opensubtitles">OpenSubtitles</option>
+                <option value="subdl">SubDL</option>
+              </select>
+            </div>
+            <input
+              type="password"
+              value={settings.subtitleApiKey}
+              onChange={(e) => updateSetting('subtitleApiKey', e.target.value)}
+              placeholder="Provider API key"
+              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+            />
+            <div className="flex gap-2">
+              <input
+                value={subtitleQuery}
+                onChange={(e) => setSubtitleQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void searchSubtitles(); }}
+                placeholder="Movie or series title"
+                className="min-w-0 flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+              />
+              <button type="button" onClick={() => void searchSubtitles()} disabled={subtitleBusy} className="px-3 rounded-xl bg-cyan-600 text-white font-semibold disabled:opacity-50">
+                Search
+              </button>
+            </div>
+            <div className="space-y-1.5 max-h-[170px] overflow-y-auto">
+              {subtitleResults.map((result) => (
+                <button key={`${result.provider}-${result.id}`} type="button" onClick={() => void applySubtitle(result)} disabled={subtitleBusy} className="w-full text-left p-2 rounded-xl bg-slate-900/70 border border-slate-800 hover:border-cyan-500/60 disabled:opacity-50">
+                  <div className="font-semibold text-slate-200 truncate">{result.title}</div>
+                  <div className="text-[10px] text-slate-400">{result.language} · {result.format.toUpperCase()} · {result.provider}</div>
+                </button>
+              ))}
+            </div>
+            <label className="block p-2 rounded-xl bg-slate-900/60 border border-slate-800/80">
+              <div className="flex justify-between font-semibold text-slate-200">
+                <span>Timing adjustment</span>
+                <span className="text-cyan-300">{settings.subtitleDelayMs > 0 ? `+${settings.subtitleDelayMs}` : settings.subtitleDelayMs} ms</span>
+              </div>
+              <input type="range" min="-5000" max="5000" step="100" value={settings.subtitleDelayMs} onChange={(e) => updateSetting('subtitleDelayMs', Number(e.target.value))} className="w-full accent-cyan-500 mt-2" />
+              <div className="flex justify-between text-[10px] text-slate-500"><span>Earlier</span><span>Later</span></div>
+            </label>
+            <label className="flex items-center justify-between p-2 rounded-xl bg-cyan-950/20 border border-cyan-900/40">
+              <span className="font-semibold text-cyan-200">Show downloaded subtitles</span>
+              <input type="checkbox" checked={settings.subtitleEnabled} onChange={(e) => updateSetting('subtitleEnabled', e.target.checked)} className="w-4 h-4 accent-cyan-500" />
+            </label>
           </div>
         )}
 

@@ -44,6 +44,8 @@ export class ContentState {
   // Full-auto bilingual text.
   bilingualSubtitleText = '';
   lastObservedSubtitleText = '';
+  externalSubtitleText = '';
+  externalSubtitleVideo: HTMLVideoElement | null = null;
 
   // Locking.
   lockedSubtitleAnchor: LockedSubtitleAnchor | null = null;

@@ -11,6 +11,9 @@ export interface SubtitleOverlayProps {
   isLoading?: boolean;
   bilingualText?: string;
   targetLang?: string;
+  externalSubtitleText?: string;
+  externalSubtitleVideo?: HTMLVideoElement | null;
+  subtitleDelayMs?: number;
   onUnlock?: () => void;
 }
 
@@ -30,12 +33,15 @@ export function SubtitleOverlay({
   isLoading = false,
   bilingualText,
   targetLang,
+  externalSubtitleText,
+  externalSubtitleVideo,
   onUnlock,
 }: SubtitleOverlayProps) {
   const glowRef = useRef<HTMLDivElement>(null);
   const lockedRef = useRef<HTMLDivElement>(null);
   const bilingualRef = useRef<HTMLDivElement>(null);
   const candidateRef = useRef<HTMLDivElement>(null);
+  const externalRef = useRef<HTMLDivElement>(null);
   const [isGlowActive, setIsGlowActive] = useState(false);
 
   // Resolve mode for pill color
@@ -78,6 +84,23 @@ export function SubtitleOverlay({
     update();
     return () => cancelAnimationFrame(animId);
   }, [glowTarget, lockedElement, selectionCandidate, isSelecting, bilingualText, isGlowActive]);
+
+  useEffect(() => {
+    if (!externalSubtitleVideo || !externalSubtitleText || !externalRef.current) return;
+    let frameId: number;
+    const update = () => {
+      const rect = externalSubtitleVideo.getBoundingClientRect();
+      const overlay = externalRef.current;
+      if (overlay) {
+        overlay.style.left = `${rect.left + rect.width * 0.08}px`;
+        overlay.style.top = `${rect.top + rect.height * 0.78}px`;
+        overlay.style.width = `${rect.width * 0.84}px`;
+      }
+      frameId = requestAnimationFrame(update);
+    };
+    update();
+    return () => cancelAnimationFrame(frameId);
+  }, [externalSubtitleVideo, externalSubtitleText]);
 
   // Glow trigger
   useEffect(() => {
@@ -236,6 +259,26 @@ export function SubtitleOverlay({
           }}
         >
           {bilingualText}
+        </div>
+      )}
+
+      {externalSubtitleText && externalSubtitleVideo && (
+        <div
+          ref={externalRef}
+          dir={isRtl ? 'rtl' : 'ltr'}
+          style={{
+            position: 'fixed', left: '0', top: '0', width: '0',
+            padding: '5px 14px', borderRadius: '7px',
+            background: 'rgba(15, 23, 42, 0.86)',
+            color: '#f8fafc', fontSize: 'clamp(14px, 2.1vw, 28px)',
+            fontWeight: 700, lineHeight: 1.3, textAlign: 'center',
+            textShadow: '0 2px 3px rgba(0,0,0,0.95)',
+            boxSizing: 'border-box', zIndex: 2147483626,
+            pointerEvents: 'none', userSelect: 'none',
+            fontFamily: 'Inter, system-ui, sans-serif',
+          }}
+        >
+          {externalSubtitleText}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 // events/RuntimeMessages.ts
 
 import type { ContentState } from '../state/ContentState';
+import type { SubtitleTrack } from '../subtitles/types';
 
 export interface RuntimeMessagesDeps {
   /**
@@ -13,6 +14,7 @@ export interface RuntimeMessagesDeps {
    * `unlockContainer`.
    */
   onResetSelection: () => void;
+  onApplySubtitle: (track: SubtitleTrack) => void;
 }
 
 export interface RuntimeMessagesHandle {
@@ -40,7 +42,7 @@ export function startRuntimeMessages(
   deps: RuntimeMessagesDeps,
 ): RuntimeMessagesHandle {
   const listener = (
-    message: { type?: string } | undefined,
+    message: { type?: string; track?: SubtitleTrack } | undefined,
     _sender: unknown,
     sendResponse: (response: unknown) => void,
   ): boolean | undefined => {
@@ -54,6 +56,12 @@ export function startRuntimeMessages(
 
     if (message.type === 'RESET_SELECTION') {
       deps.onResetSelection();
+      sendResponse({ success: true });
+      return true;
+    }
+
+    if (message.type === 'SUBTITLE_APPLY' && message.track) {
+      deps.onApplySubtitle(message.track);
       sendResponse({ success: true });
       return true;
     }

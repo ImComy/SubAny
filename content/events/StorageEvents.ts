@@ -1,6 +1,7 @@
 // events/StorageEvents.ts
 
 import type { ContentState } from '../state/ContentState';
+import type { SubtitleTrack } from '../subtitles/types';
 
 export interface StorageEventsDeps {
   /**
@@ -18,6 +19,7 @@ export interface StorageEventsDeps {
    * Matches the body of the original `browser.storage.onChanged` listener.
    */
   onSettingsChanged: (newSettings: Record<string, unknown>) => void;
+  onSubtitleTrackChanged: (track: SubtitleTrack) => void;
 }
 
 export interface StorageEventsHandle {
@@ -42,8 +44,12 @@ export function startStorageEvents(
     changes,
   ) => {
     const next = changes.subanySettings?.newValue;
-    if (!next || typeof next !== 'object') return;
-    deps.onSettingsChanged(next as Record<string, unknown>);
+    if (next && typeof next === 'object') {
+      deps.onSettingsChanged(next as Record<string, unknown>);
+    }
+
+    const trackChange = changes.subanySubtitleTrack?.newValue as { track?: SubtitleTrack } | undefined;
+    if (trackChange?.track) deps.onSubtitleTrackChanged(trackChange.track);
   };
 
   browser.storage.onChanged.addListener(listener);
