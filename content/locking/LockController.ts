@@ -1,9 +1,9 @@
 // locking/LockController.ts
 
 import type { ContentState } from '../state/ContentState';
-import type { SubtitleManager } from '../../lib/SubtitleManager';
+import type { SubtitleManager } from '../../lib/SubtitleManager.ts';
 import type { DomTextSwapper } from '../replacement/DomTextSwapper';
-import { getVideoForElement } from '../../utils/dom';
+import { generateUniqueSelector, getVideoForElement } from '../../utils/dom';
 import { combineSubtitleLines, isUsableSubtitleLine } from '../detection/SubtitleGrouping';
 import { makeAutoRegionKey } from '../autodetect/AutoRegionKey';
 import { isValidSelectionTarget } from './LockedAnchor';
@@ -94,7 +94,7 @@ export class LockController {
       s.autoDetectionDisabled = true;
       this.deps.stopAutoDetection();
 
-      const selector = subtitleManager.generateUniqueSelector(container);
+      const selector = generateUniqueSelector(container);
       s.settings.lockedSelector = selector;
       subtitleManager.setLockedSelector(selector);
       rememberLockedAnchor(s, container);

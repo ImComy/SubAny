@@ -1,7 +1,7 @@
 // content/ContentApp.ts
 
 import { DEFAULT_SETTINGS, type ExtensionSettings } from '../lib/types';
-import { SubtitleManager } from '../lib/SubtitleManager';
+import { SubtitleManager } from '../lib/SubtitleManager.ts';
 import { TranslationManager } from '../lib/TranslationManager';
 import { VideoController } from '../lib/VideoController';
 
@@ -75,6 +75,9 @@ export class ContentApp {
 
   private readonly handles: Array<{ dispose: () => void }> = [];
   private glowTimer: number | null = null;
+  private autoDetectionElected = false;
+  private autoLeaseTimer: number | null = null;
+  private autoElectionRetryTimer: number | null = null;
 
   constructor() {
     this.state = new ContentState();
@@ -122,12 +125,15 @@ export class ContentApp {
     });
 
     this.selectionDeps = {
-      lockContainer: (element) => this.lockController.lock(element, false),
+      lockContainer: async (element) => {
+        this.releaseAutoDetectionLease();
+        await this.lockController.lock(element, false);
+      },
       stopAutoDetection: () => this.autoDetect.stop(),
       resumeAutoDetection: () => {
         const s = this.state;
         if (!s.settings.lockedSelector && !s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) {
-          this.autoDetect.start();
+          void this.ensureAutoDetectionLease();
         }
       },
     };
@@ -142,9 +148,9 @@ export class ContentApp {
 
     this.extensionRoot.attach();
 
-    this.subtitleManager.setGlowCallback((el) => this.triggerGlow(el));
+    this.subtitleManager.setGlowCallback((el: HTMLElement) => this.triggerGlow(el));
 
-    this.overlayController.hidePlatformOverlays();
+    this.overlayController.hideYouTubeOverlays();
 
     this.handles.push(startDomObserver(s, {
       onDomChange: () => this.tick(),
@@ -161,7 +167,9 @@ export class ContentApp {
       onSettingsChanged: (next) => this.handleSettingsChanged(next),
     }));
     this.handles.push(startRuntimeMessages(s, {
-      onStartSelection: () => startSelection(s, this.selectionDeps),
+      onStartSelection: () => {
+        if (this.canOwnSelectionFrame()) startSelection(s, this.selectionDeps);
+      },
       onResetSelection: () => { void this.unlockContainer(); },
     }));
 
@@ -189,6 +197,7 @@ export class ContentApp {
 
     stopLockedMonitor(this.state);
     this.autoDetect.stop();
+    this.releaseAutoDetectionLease();
     stopVideoMonitor();
 
     this.state.onRender = null;
@@ -205,7 +214,9 @@ export class ContentApp {
       state: this.state,
       domSwapper: this.domSwapper,
       subtitleTranslation: this.subtitleTranslationDeps,
-      updateAutoDetection: () => this.autoDetect.tick(),
+      updateAutoDetection: () => {
+        if (this.autoDetectionElected) this.autoDetect.tick();
+      },
     });
   }
 
@@ -214,7 +225,8 @@ export class ContentApp {
   }
 
   private async unlockContainer(): Promise<void> {
-    return this.lockController.unlock();
+    await this.lockController.unlock();
+    void this.ensureAutoDetectionLease();
   }
 
   // ---------------------------------------------------------------------
@@ -250,7 +262,7 @@ export class ContentApp {
     if (s.settings.lockedSelector) {
       startLockedMonitor(s);
     } else if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) {
-      this.autoDetect.start();
+      void this.ensureAutoDetectionLease();
     }
   }
 
@@ -278,11 +290,12 @@ export class ContentApp {
     }
 
     if (s.settings.lockedSelector) {
+      this.releaseAutoDetectionLease();
       this.autoDetect.stop();
       startLockedMonitor(s);
     } else {
       stopLockedMonitor(s);
-      if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) this.autoDetect.start();
+      if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) void this.ensureAutoDetectionLease();
     }
 
     if (s.settings.triggerMode !== 'full-auto') s.bilingualSubtitleText = '';
@@ -302,6 +315,7 @@ export class ContentApp {
     const s = this.state;
 
     if (s.settings.lockedSelector) {
+      this.releaseAutoDetectionLease();
       const reattached = reattachLockedContainer(s);
       if (reattached) {
         this.autoDetect.stop();
@@ -317,7 +331,7 @@ export class ContentApp {
     if (s.autoDetectionDisabled) return;
 
     if (s.isAutomaticSubtitleMode()) {
-      this.autoDetect.start();
+      void this.ensureAutoDetectionLease();
     }
   }
 
@@ -352,4 +366,73 @@ export class ContentApp {
       maintainLockedContainer(s, true);
     }
   };
+
+  private canOwnSelectionFrame(): boolean {
+    if (this.autoDetectionElected) return true;
+    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    return videos.some((video) => {
+      const rect = video.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+  }
+
+  private async ensureAutoDetectionLease(): Promise<void> {
+    const s = this.state;
+    if (s.settings.lockedSelector || s.autoDetectionDisabled || !s.isAutomaticSubtitleMode()) {
+      this.autoDetect.stop();
+      return;
+    }
+    if (this.autoDetectionElected) {
+      this.autoDetect.start();
+      return;
+    }
+
+    try {
+      const response = await browser.runtime.sendMessage({ action: 'acquire-auto-detection' }) as { granted?: boolean };
+      if (!response?.granted) {
+        this.autoDetect.stop();
+        if (this.autoElectionRetryTimer === null) {
+          this.autoElectionRetryTimer = window.setTimeout(() => {
+            this.autoElectionRetryTimer = null;
+            void this.ensureAutoDetectionLease();
+          }, 1200);
+        }
+        return;
+      }
+      this.autoDetectionElected = true;
+      this.autoLeaseTimer = window.setInterval(() => {
+        void this.renewAutoDetectionLease();
+      }, 1000);
+      this.autoDetect.start();
+    } catch {
+      this.autoDetect.stop();
+    }
+  }
+
+  private async renewAutoDetectionLease(): Promise<void> {
+    try {
+      const response = await browser.runtime.sendMessage({ action: 'acquire-auto-detection' }) as { granted?: boolean };
+      if (!response?.granted) {
+        this.autoDetectionElected = false;
+        this.autoDetect.stop();
+      }
+    } catch {
+      this.autoDetectionElected = false;
+      this.autoDetect.stop();
+    }
+  }
+
+  private releaseAutoDetectionLease(): void {
+    if (this.autoLeaseTimer !== null) {
+      window.clearInterval(this.autoLeaseTimer);
+      this.autoLeaseTimer = null;
+    }
+    if (this.autoElectionRetryTimer !== null) {
+      window.clearTimeout(this.autoElectionRetryTimer);
+      this.autoElectionRetryTimer = null;
+    }
+    if (!this.autoDetectionElected) return;
+    this.autoDetectionElected = false;
+    void browser.runtime.sendMessage({ action: 'release-auto-detection' }).catch(() => {});
+  }
 }

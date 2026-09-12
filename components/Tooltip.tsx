@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 export interface TooltipProps {
   x: number;
@@ -9,8 +9,6 @@ export interface TooltipProps {
   mode?: 'word' | 'phrase' | 'range';
   isLoading?: boolean;
   targetLang?: string;
-  // legacy compat
-  isPhrase?: boolean;
 }
 
 const MODE_LABELS = {
@@ -30,21 +28,25 @@ export function Tooltip({
   mode = 'word',
   isLoading = false,
   targetLang,
-  isPhrase,
 }: TooltipProps) {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [tooltipHeight, setTooltipHeight] = useState(0);
+  const tooltipRef = useRef<HTMLDivElement>(null);
 
-  // Legacy compat
-  const resolvedMode: 'word' | 'phrase' | 'range' = isPhrase ? 'phrase' : (mode ?? 'word');
+  const resolvedMode: 'word' | 'phrase' | 'range' = mode ?? 'word';
   const modeInfo = MODE_LABELS[resolvedMode] ?? DEFAULT_MODE_INFO;
 
   const tooltipWidth = resolvedMode === 'word' ? 310 : 370;
-  const tooltipHeight = resolvedMode === 'word' ? 110 : 135;
+
+  useLayoutEffect(() => {
+    const height = tooltipRef.current?.getBoundingClientRect().height;
+    if (height && height !== tooltipHeight) setTooltipHeight(height);
+  }, [tooltipHeight, originalText, translatedText, isLoading, resolvedMode, engineUsed]);
 
   const left = Math.min(Math.max(12, x + 14), window.innerWidth - tooltipWidth - 16);
   const top =
-    y + tooltipHeight + 24 > window.innerHeight
-      ? Math.max(12, y - tooltipHeight - 16)
+    y + (tooltipHeight || 135) + 24 > window.innerHeight
+      ? Math.max(12, y - (tooltipHeight || 135) - 16)
       : y + 20;
 
   const speakText = (text: string, lang?: string) => {
@@ -66,6 +68,7 @@ export function Tooltip({
 
   return (
     <div
+      ref={tooltipRef}
       style={{
         position: 'fixed',
         left: `${left}px`,

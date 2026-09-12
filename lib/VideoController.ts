@@ -78,7 +78,7 @@ export class VideoController {
   /**
    * Hides YouTube pause overlay cards that obstruct the subtitle view
    */
-  hidePlatformOverlays(): void {
+  hideYouTubeOverlays(): void {
     const styleId = 'subany-platform-overlay-style';
     if (!document.getElementById(styleId)) {
       const style = document.createElement('style');

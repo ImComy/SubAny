@@ -2,7 +2,13 @@
 
 import { getAllElements, getDeepestTextContainer } from '../../utils/dom';
 import { isSubtitleText } from '../../utils/text';
-import { scoreSubtitleCandidate, isPlayerControlRegion, type CandidateScore } from './CandidateScorer';
+import {
+  getSubtitlePresentationAncestor,
+  hasSubtitleClass,
+  scoreSubtitleCandidate,
+  isPlayerControlRegion,
+  type CandidateScore,
+} from './CandidateScorer';
 import { combineSubtitleLines } from './SubtitleGrouping';
 
 export function findBestSubtitleContainer(): HTMLElement | null {
@@ -51,6 +57,9 @@ export function findSubtitleByGeometry(clientX: number, clientY: number): HTMLEl
     const scored = scoreSubtitleCandidate(el);
     if (!scored) continue;
 
+    const video = getContainingVideo(el);
+    if (!isSubtitlePosition(el, video?.getBoundingClientRect() ?? null)) continue;
+
     scored.score += 35;
     scored.reasons.push('geometry-hit');
 
@@ -73,7 +82,10 @@ export function findSubtitleByGeometry(clientX: number, clientY: number): HTMLEl
 export function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLElement | null {
   const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
-  const nearestVideo = videos[0] ?? null;
+  const nearestVideo = videos.find((video) => {
+    const rect = video.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }) ?? videos[0] ?? null;
   const vRect = nearestVideo ? nearestVideo.getBoundingClientRect() : null;
 
   const validStack = stack.filter((el) => {
@@ -88,6 +100,8 @@ export function findGenuineSubtitleCandidate(clientX: number, clientY: number): 
 
     const text = el.innerText?.trim() ?? '';
     if (!text || !isSubtitleText(text)) return false;
+
+    if (!isSubtitlePosition(el, vRect)) return false;
 
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
@@ -122,6 +136,8 @@ export function findGenuineSubtitleCandidate(clientX: number, clientY: number): 
           const text = child.innerText?.trim() ?? '';
           if (!text || !isSubtitleText(text)) continue;
 
+          if (!isSubtitlePosition(child, vRect)) continue;
+
           const r = child.getBoundingClientRect();
           if (r.width > 0 && r.height > 0 && r.height <= vRect.height * 0.4) {
             if (
@@ -150,4 +166,30 @@ export function findGenuineSubtitleCandidate(clientX: number, clientY: number): 
 
   if (validStack[0]) return getDeepestTextContainer(validStack[0]);
   return null;
+}
+
+function getContainingVideo(element: HTMLElement): HTMLVideoElement | null {
+  const elementRect = element.getBoundingClientRect();
+  return (Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]).find((video) => {
+    const videoRect = video.getBoundingClientRect();
+    return (
+      videoRect.width > 0 &&
+      videoRect.height > 0 &&
+      elementRect.left <= videoRect.right &&
+      elementRect.right >= videoRect.left &&
+      elementRect.top <= videoRect.bottom &&
+      elementRect.bottom >= videoRect.top
+    );
+  }) ?? null;
+}
+
+function isSubtitlePosition(element: HTMLElement, videoRect: DOMRect | null): boolean {
+  if (!videoRect || videoRect.width <= 0 || videoRect.height <= 0) return true;
+
+  if (hasSubtitleClass(element) || getSubtitlePresentationAncestor(element, videoRect)) return true;
+
+  const rect = element.getBoundingClientRect();
+  const centerY = rect.top + rect.height / 2;
+  const yRatio = (centerY - videoRect.top) / videoRect.height;
+  return yRatio >= 0.55 && yRatio <= 1.02;
 }

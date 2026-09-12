@@ -10,6 +10,7 @@ import {
 } from '../detection/CandidateScorer';
 import { combineSubtitleLines, isUsableSubtitleLine } from '../detection/SubtitleGrouping';
 import { makeAutoRegionKey } from './AutoRegionKey';
+import { AUTO_DETECTION_WEIGHTS as weights } from './weights';
 
 export interface AutoCandidate {
   element: HTMLElement;
@@ -45,33 +46,33 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
     const widthRatio = rect.width / videoRect.width;
     const heightRatio = rect.height / videoRect.height;
 
-    if (cx > 0.20 && cx < 0.80) score += 22;
-    else if (cx > 0.10 && cx < 0.90) score += 6;
-    else score -= 18;
+    if (cx > 0.20 && cx < 0.80) score += weights.centeredX;
+    else if (cx > 0.10 && cx < 0.90) score += weights.nearCenteredX;
+    else score += weights.edgeX;
 
-    if (cy >= 0.56 && cy <= 0.88) score += 34;
-    else if (cy > 0.88 && cy <= 0.96) score += 4;
-    else score -= 32;
+    if (cy >= 0.56 && cy <= 0.88) score += weights.subtitleBandY;
+    else if (cy > 0.88 && cy <= 0.96) score += weights.lowerBandY;
+    else score += weights.outsideBandY;
 
-    if (widthRatio > 0.04 && widthRatio < 0.82) score += 12;
-    else score -= 22;
+    if (widthRatio > 0.04 && widthRatio < 0.82) score += weights.subtitleWidth;
+    else score += weights.invalidWidth;
 
-    if (heightRatio > 0.01 && heightRatio < 0.16) score += 10;
-    else score -= 22;
+    if (heightRatio > 0.01 && heightRatio < 0.16) score += weights.subtitleHeight;
+    else score += weights.invalidHeight;
   }
 
   const presentationAncestor = getSubtitlePresentationAncestor(element, videoRect);
-  if (presentationAncestor) score += 34;
+  if (presentationAncestor) score += weights.presentationAncestor;
 
-  if (hasSubtitleClass(element)) score += 16;
-  if (getComputedStyle(element).pointerEvents === 'none') score += 10;
+  if (hasSubtitleClass(element)) score += weights.subtitleClass;
+  if (getComputedStyle(element).pointerEvents === 'none') score += weights.pointerEventsNone;
 
   const hasStrongPresentationSignal =
     !!presentationAncestor ||
     hasSubtitleClass(element) ||
     getComputedStyle(element).pointerEvents === 'none';
 
-  if (!hasStrongPresentationSignal) score -= 28;
+  if (!hasStrongPresentationSignal) score += weights.missingPresentationSignal;
 
   return score;
 }

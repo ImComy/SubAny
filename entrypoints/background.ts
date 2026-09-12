@@ -8,6 +8,26 @@ import {
 
 // In-memory cache for ultra-fast repetitive hover lookups
 const memoryCache = new Map<string, string>();
+const autoDetectionLeases = new Map<number, { frameId: number; expiresAt: number }>();
+const AUTO_DETECTION_LEASE_MS = 2500;
+
+browser.tabs?.onRemoved?.addListener((tabId) => {
+  autoDetectionLeases.delete(tabId);
+});
+
+function acquireAutoDetectionLease(tabId: number, frameId: number): boolean {
+  const now = Date.now();
+  const current = autoDetectionLeases.get(tabId);
+  const available = !current || current.expiresAt <= now;
+  const topFramePreempts = frameId === 0 && current && current.frameId !== 0;
+  if (!available && !topFramePreempts && current?.frameId !== frameId) return false;
+  autoDetectionLeases.set(tabId, { frameId, expiresAt: now + AUTO_DETECTION_LEASE_MS });
+  return true;
+}
+
+function releaseAutoDetectionLease(tabId: number, frameId: number): void {
+  if (autoDetectionLeases.get(tabId)?.frameId === frameId) autoDetectionLeases.delete(tabId);
+}
 
 async function getStoredSettings(): Promise<ExtensionSettings> {
   try {
@@ -166,7 +186,23 @@ async function executeTranslation(
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener(
-    (rawMessage: any, _sender, sendResponse) => {
+    (rawMessage: any, sender, sendResponse) => {
+      if (rawMessage?.action === 'acquire-auto-detection') {
+        const tabId = sender.tab?.id;
+        const frameId = sender.frameId ?? 0;
+        sendResponse({
+          granted: typeof tabId === 'number' && acquireAutoDetectionLease(tabId, frameId),
+        });
+        return true;
+      }
+
+      if (rawMessage?.action === 'release-auto-detection') {
+        const tabId = sender.tab?.id;
+        if (typeof tabId === 'number') releaseAutoDetectionLease(tabId, sender.frameId ?? 0);
+        sendResponse({ released: true });
+        return true;
+      }
+
       if (rawMessage && typeof rawMessage === 'object' && rawMessage.action === 'translate') {
         const message = rawMessage as TranslateRequestMessage;
         const text = String(message.text ?? '').trim();

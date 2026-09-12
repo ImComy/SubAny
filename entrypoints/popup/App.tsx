@@ -289,13 +289,9 @@ export default function App() {
               >
                 <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500 rounded-xl" />
                 <div className="relative px-4 py-2.5 bg-slate-950 rounded-[11px] flex items-center justify-center gap-2 group-hover:bg-opacity-80 transition">
-                  <span className="text-base">
-                    {settings.selectionMode === 'pin-drag' ? '📍' : '🎯'}
-                  </span>
+                  <span className="text-base">🎯</span>
                   <span className="text-white font-bold tracking-wide">
-                    {settings.selectionMode === 'pin-drag'
-                      ? 'Drag Pin on Subtitles'
-                      : 'Select Subtitles on Page'}
+                    Select Subtitles on Page
                   </span>
                 </div>
               </button>
@@ -339,48 +335,6 @@ export default function App() {
         {/* Tab 2: Settings */}
         {activeTab === 'settings' && (
           <div className="mt-4 space-y-3 text-xs max-h-[350px] overflow-y-auto pr-1">
-            {/* Selection Mode */}
-            <div>
-              <label className="block font-semibold text-slate-300 mb-1.5">
-                Container Selection Method
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => updateSetting('selectionMode', 'pin-drag')}
-                  className={`p-2.5 rounded-xl border text-left transition ${
-                    settings.selectionMode === 'pin-drag'
-                      ? 'bg-cyan-950/40 border-cyan-500 text-cyan-300'
-                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="font-bold flex items-center gap-1.5">
-                    <span>📍</span> Pointy Pin Needle
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Drag pin directly onto subtitles
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => updateSetting('selectionMode', 'hover-click')}
-                  className={`p-2.5 rounded-xl border text-left transition ${
-                    settings.selectionMode === 'hover-click'
-                      ? 'bg-cyan-950/40 border-cyan-500 text-cyan-300'
-                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="font-bold flex items-center gap-1.5">
-                    <span>🎯</span> Hover & Click
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Highlight and click element
-                  </div>
-                </button>
-              </div>
-            </div>
-
             {/* Toggles */}
             <div className="space-y-2 pt-1 border-t border-slate-800/80">
               {/* Replace Original Subtitles (In-Place) */}
@@ -423,38 +377,6 @@ export default function App() {
                   type="checkbox"
                   checked={settings.pauseVideoOnHover}
                   onChange={(e) => updateSetting('pauseVideoOnHover', e.target.checked)}
-                  className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
-                />
-              </label>
-
-              {/* Auto Detect Platforms */}
-              <label className="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 cursor-pointer hover:bg-slate-900 transition">
-                <div>
-                  <div className="font-semibold text-slate-200">Platform Auto-Detect</div>
-                  <div className="text-[10px] text-slate-400">
-                    YouTube, Netflix, Prime, Udemy, etc.
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={settings.autoDetectPlatforms}
-                  onChange={(e) => updateSetting('autoDetectPlatforms', e.target.checked)}
-                  className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
-                />
-              </label>
-
-              {/* Smart Heuristic Algorithm */}
-              <label className="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 cursor-pointer hover:bg-slate-900 transition">
-                <div>
-                  <div className="font-semibold text-slate-200">Smart Heuristic Algorithm</div>
-                  <div className="text-[10px] text-slate-400">
-                    Detects custom web player subtitle overlays
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={settings.smartHeuristics}
-                  onChange={(e) => updateSetting('smartHeuristics', e.target.checked)}
                   className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
                 />
               </label>

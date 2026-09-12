@@ -2,6 +2,7 @@
 
 import { getVideoForElement, getVideoSignature } from '../../utils/dom';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
+import { getSubtitlePresentationAncestor, hasSubtitleClass } from '../detection/CandidateScorer';
 import type { LockedSubtitleAnchor } from '../state/types';
 
 /**
@@ -92,6 +93,15 @@ export function isHealthyLockedElement(element: HTMLElement | null): boolean {
     if (vr.width > 0 && vr.height > 0) {
       if (rect.width >= vr.width * 0.96) return false;
       if (rect.height >= vr.height * 0.45) return false;
+
+      // Reject stale selectors that resolve to a player title or other text
+      // overlay near the top of the video. Explicit subtitle presentation
+      // signals remain valid even when a player positions captions unusually.
+      const hasPresentationSignal =
+        hasSubtitleClass(element) || !!getSubtitlePresentationAncestor(element, vr);
+      const centerY = rect.top + rect.height / 2;
+      const yRatio = (centerY - vr.top) / vr.height;
+      if (!hasPresentationSignal && yRatio < 0.55) return false;
     }
   }
 

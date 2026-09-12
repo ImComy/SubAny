@@ -166,3 +166,33 @@ export function getVideoSubtitleRect(video: HTMLVideoElement, cue: TextTrackCue)
 
   return new DOMRect(left, top, cueWidth, cueHeight);
 }
+
+export function generateUniqueSelector(element: HTMLElement): string {
+  const escape = (value: string): string => {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
+    return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  };
+  const attribute = ['data-testid', 'data-test', 'aria-label'].find((name) => element.hasAttribute(name));
+  if (attribute) return `${element.tagName.toLowerCase()}[${attribute}="${escape(element.getAttribute(attribute) ?? '')}"]`;
+  if (element.id && !/^\d/.test(element.id) && !element.id.includes(':')) return `#${escape(element.id)}`;
+
+  const path: string[] = [];
+  let current: HTMLElement | null = element;
+  while (current && current !== document.body && current !== document.documentElement) {
+    let selector = current.tagName.toLowerCase();
+    const primaryClass = Array.from(current.classList).find((name) =>
+      !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-'),
+    );
+    if (primaryClass) selector += `.${escape(primaryClass)}`;
+
+    const parent: HTMLElement | null = current.parentElement;
+    if (parent) {
+      const siblings = Array.from(parent.children).filter((child: Element) => child.tagName === current!.tagName);
+      if (siblings.length > 1) selector += `:nth-child(${Array.from(parent.children).indexOf(current) + 1})`;
+    }
+    path.unshift(selector);
+    current = parent;
+    if (path.length >= 4) break;
+  }
+  return path.length > 0 ? path.join(' > ') : 'body';
+}

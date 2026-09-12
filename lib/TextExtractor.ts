@@ -57,14 +57,15 @@ function getCaretInfo(x: number, y: number): { node: Text; offset: number } | nu
   }
 
   if (disabledList.length > 0) {
-    caret =
-      document.caretPositionFromPoint?.(x, y) ??
-      document.caretRangeFromPoint?.(x, y);
-  }
-
-  // Restore pointer-events
-  for (const item of disabledList) {
-    item.el.style.pointerEvents = item.prev;
+    try {
+      caret =
+        document.caretPositionFromPoint?.(x, y) ??
+        document.caretRangeFromPoint?.(x, y);
+    } finally {
+      for (const item of disabledList) {
+        item.el.style.pointerEvents = item.prev;
+      }
+    }
   }
 
   if (isTextCaret(caret)) {
@@ -321,35 +322,4 @@ export class TextExtractor {
     }
   }
 
-  // ---- legacy compat shims (used by SubtitleOverlay / other callers) ----
-
-  /** @deprecated use getWord() */
-  static getWordAtPoint(x: number, y: number): string {
-    return this.getWord(x, y).text;
-  }
-
-  /** @deprecated use getWord().rect */
-  static getWordOrPhraseWithBoundingRect(
-    x: number,
-    y: number,
-    isShiftHeld = false,
-  ): { text: string; rect: DOMRect | null; isPhrase: boolean } {
-    if (isShiftHeld) {
-      const r = this.getFullPhrase(x, y);
-      return { text: r.text, rect: r.rect, isPhrase: true };
-    }
-    const r = this.getWord(x, y);
-    return { text: r.text, rect: r.rect, isPhrase: false };
-  }
-
-  /** @deprecated use getRangeBetweenPoints() */
-  static getSelectionRange(
-    startX: number,
-    startY: number,
-    endX: number,
-    endY: number,
-  ): { text: string; rect: DOMRect | null } {
-    const r = this.getRangeBetweenPoints(startX, startY, endX, endY);
-    return { text: r.text, rect: r.rect };
-  }
 }

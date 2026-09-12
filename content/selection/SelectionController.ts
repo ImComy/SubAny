@@ -136,11 +136,9 @@ export function handleSelectionClick(
     return;
   }
 
-  // Case 3: nothing pinnable under the cursor. Original left selection mode
-  // open in this situation — preserve that behaviour. We still refresh the
-  // candidate pointer so the overlay highlight stays in sync.
-  state.selectionCandidateEl = null;
-  state.notify();
+  // A click outside a valid subtitle is an explicit cancellation. Leaving
+  // selection active here made the UI appear stuck until a context-menu event.
+  cancelSelection(state, deps, { resumeAuto: true });
 }
 
 /**

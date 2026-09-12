@@ -1,0 +1,16 @@
+export const AUTO_DETECTION_WEIGHTS = {
+  centeredX: 22,
+  nearCenteredX: 6,
+  edgeX: -18,
+  subtitleBandY: 34,
+  lowerBandY: 4,
+  outsideBandY: -32,
+  subtitleWidth: 12,
+  invalidWidth: -22,
+  subtitleHeight: 10,
+  invalidHeight: -22,
+  presentationAncestor: 34,
+  subtitleClass: 16,
+  pointerEventsNone: 10,
+  missingPresentationSignal: -28,
+} as const;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface SubtitleOverlayProps {
   glowTarget: HTMLElement | null;
@@ -12,10 +12,6 @@ export interface SubtitleOverlayProps {
   bilingualText?: string;
   targetLang?: string;
   onUnlock?: () => void;
-  // legacy compat — ignored if highlightMode is set
-  isPhrase?: boolean;
-  nativeReplacementText?: string;
-  nativeReplacementStyles?: React.CSSProperties;
 }
 
 const MODE_COLORS: Record<string, string> = {
@@ -35,37 +31,53 @@ export function SubtitleOverlay({
   bilingualText,
   targetLang,
   onUnlock,
-  // legacy
-  isPhrase,
-  nativeReplacementText,
-  nativeReplacementStyles,
 }: SubtitleOverlayProps) {
-  const [glowRect, setGlowRect] = useState<DOMRect | null>(null);
-  const [lockedRect, setLockedRect] = useState<DOMRect | null>(null);
-  const [candidateRect, setCandidateRect] = useState<DOMRect | null>(null);
+  const glowRef = useRef<HTMLDivElement>(null);
+  const lockedRef = useRef<HTMLDivElement>(null);
+  const bilingualRef = useRef<HTMLDivElement>(null);
+  const candidateRef = useRef<HTMLDivElement>(null);
   const [isGlowActive, setIsGlowActive] = useState(false);
 
   // Resolve mode for pill color
-  const mode: 'word' | 'phrase' | 'range' =
-    highlightMode ?? (isPhrase ? 'phrase' : 'word');
+  const mode: 'word' | 'phrase' | 'range' = highlightMode ?? 'word';
   const colorBase = MODE_COLORS[mode] ?? MODE_COLORS.word;
 
-  // Sync element positions every frame
+  // Position overlays imperatively. Geometry is transient DOM state, not UI state.
   useEffect(() => {
+    const targets = [
+      [glowTarget, glowRef.current, 6],
+      [lockedElement, lockedRef.current, 4],
+      [lockedElement && bilingualText ? lockedElement : null, bilingualRef.current, 0],
+      [selectionCandidate && isSelecting ? selectionCandidate : null, candidateRef.current, 0],
+    ] as const;
+    if (!targets.some(([target, overlay]) => target && overlay)) return;
+
     let animId: number;
     const update = () => {
-      setGlowRect(glowTarget ? glowTarget.getBoundingClientRect() : null);
-      setLockedRect(lockedElement ? lockedElement.getBoundingClientRect() : null);
-      setCandidateRect(
-        selectionCandidate && isSelecting
-          ? selectionCandidate.getBoundingClientRect()
-          : null,
-      );
+      for (const [target, overlay, padding] of targets) {
+        if (!overlay) continue;
+        if (!target) {
+          overlay.style.display = 'none';
+          continue;
+        }
+        const rect = target.getBoundingClientRect();
+        overlay.style.display = rect.width > 0 && rect.height > 0 ? 'block' : 'none';
+        if (overlay === bilingualRef.current) {
+          overlay.style.left = `${rect.left}px`;
+          overlay.style.top = `${rect.bottom + 8}px`;
+          overlay.style.width = `${rect.width}px`;
+        } else {
+          overlay.style.left = `${rect.left - padding}px`;
+          overlay.style.top = `${rect.top - padding}px`;
+          overlay.style.width = `${rect.width + padding * 2}px`;
+          overlay.style.height = `${rect.height + padding * 2}px`;
+        }
+      }
       animId = requestAnimationFrame(update);
     };
     update();
     return () => cancelAnimationFrame(animId);
-  }, [glowTarget, lockedElement, selectionCandidate, isSelecting]);
+  }, [glowTarget, lockedElement, selectionCandidate, isSelecting, bilingualText, isGlowActive]);
 
   // Glow trigger
   useEffect(() => {
@@ -92,14 +104,15 @@ export function SubtitleOverlay({
       `}</style>
 
       {/* 1. Glow ring on auto-detect */}
-      {isGlowActive && glowRect && (
+      {isGlowActive && glowTarget && (
         <div
+          ref={glowRef}
           style={{
             position: 'fixed',
-            left: `${glowRect.left - 6}px`,
-            top: `${glowRect.top - 6}px`,
-            width: `${glowRect.width + 12}px`,
-            height: `${glowRect.height + 12}px`,
+            left: '0',
+            top: '0',
+            width: '0',
+            height: '0',
             borderRadius: '12px',
             border: '2px solid rgba(56, 189, 248, 0.9)',
             pointerEvents: 'none',
@@ -132,40 +145,16 @@ export function SubtitleOverlay({
         />
       )}
 
-      {/* 3. Legacy nativeReplacementText overlay (kept for compat, DomTextSwapper now preferred) */}
-      {nativeReplacementText && lockedRect && (
-        <div
-          dir={isRtl ? 'rtl' : 'ltr'}
-          style={{
-            position: 'fixed',
-            left: `${lockedRect.left}px`,
-            top: `${lockedRect.top}px`,
-            width: `${lockedRect.width}px`,
-            minHeight: `${lockedRect.height}px`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 2147483638,
-            pointerEvents: 'none',
-            userSelect: 'none',
-            boxSizing: 'border-box',
-            wordBreak: 'break-word',
-            ...nativeReplacementStyles,
-          }}
-        >
-          {nativeReplacementText}
-        </div>
-      )}
-
       {/* 4. Locked subtitle border indicator */}
-      {lockedRect && !isSelecting && lockedRect.width < window.innerWidth * 0.95 && lockedRect.height < window.innerHeight * 0.45 && (
+      {lockedElement && !isSelecting && (
         <div
+          ref={lockedRef}
           style={{
             position: 'fixed',
-            left: `${lockedRect.left - 4}px`,
-            top: `${lockedRect.top - 4}px`,
-            width: `${lockedRect.width + 8}px`,
-            height: `${lockedRect.height + 8}px`,
+            left: '0',
+            top: '0',
+            width: '0',
+            height: '0',
             borderRadius: '8px',
             border: '1.5px dashed rgba(56, 189, 248, 0.5)',
             boxShadow: '0 0 12px rgba(56, 189, 248, 0.12)',
@@ -220,14 +209,15 @@ export function SubtitleOverlay({
       )}
 
       {/* 5. Bilingual translation banner (full-auto mode) */}
-      {bilingualText && lockedRect && (
+      {bilingualText && lockedElement && (
         <div
+          ref={bilingualRef}
           dir={isRtl ? 'rtl' : 'ltr'}
           style={{
             position: 'fixed',
-            left: `${lockedRect.left}px`,
-            top: `${lockedRect.bottom + 8}px`,
-            width: `${lockedRect.width}px`,
+            left: '0',
+            top: '0',
+            width: '0',
             minHeight: '24px',
             padding: '6px 14px',
             borderRadius: '8px',
@@ -249,15 +239,38 @@ export function SubtitleOverlay({
         </div>
       )}
 
-      {/* 6. Selection mode candidate highlight */}
-      {isSelecting && candidateRect && (
+      {isSelecting && (
         <div
           style={{
             position: 'fixed',
-            left: `${candidateRect.left}px`,
-            top: `${candidateRect.top}px`,
-            width: `${candidateRect.width}px`,
-            height: `${candidateRect.height}px`,
+            left: '50%',
+            top: '18px',
+            transform: 'translateX(-50%)',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            background: 'rgba(15, 23, 42, 0.92)',
+            border: '1px solid rgba(56, 189, 248, 0.45)',
+            color: '#bae6fd',
+            fontSize: '13px',
+            fontWeight: 600,
+            pointerEvents: 'none',
+            zIndex: 2147483646,
+          }}
+        >
+          Click a subtitle to lock it. Press Escape to cancel.
+        </div>
+      )}
+
+      {/* 6. Selection mode candidate highlight */}
+      {isSelecting && selectionCandidate && (
+        <div
+          ref={candidateRef}
+          style={{
+            position: 'fixed',
+            left: '0',
+            top: '0',
+            width: '0',
+            height: '0',
             borderRadius: '6px',
             border: '2px solid #38bdf8',
             backgroundColor: 'rgba(56, 189, 248, 0.12)',

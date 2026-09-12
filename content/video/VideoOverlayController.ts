@@ -27,11 +27,11 @@ export class VideoOverlayController {
    * startup and again after a settings change that re-enables our overlay.
    *
    * Mirrors the original single call to
-   * `videoController.hidePlatformOverlays()` at the end of `main()`.
+  * `videoController.hideYouTubeOverlays()` at startup.
    */
-  hidePlatformOverlays(): void {
+  hideYouTubeOverlays(): void {
     if (this.hidden) return;
-    this.videoController.hidePlatformOverlays();
+    this.videoController.hideYouTubeOverlays();
     this.hidden = true;
   }
 

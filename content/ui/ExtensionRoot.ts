@@ -36,6 +36,12 @@ export class ExtensionRoot {
 
     const host = document.createElement('div');
     host.id = 'subany-extension-root';
+    // Keep the extension host above page content without depending on child
+    // z-index values leaking into the document's stacking context.
+    host.style.position = 'fixed';
+    host.style.inset = '0';
+    host.style.zIndex = '2147483647';
+    host.style.pointerEvents = 'none';
     const shadow = host.attachShadow({ mode: 'open' });
     document.body.appendChild(host);
 

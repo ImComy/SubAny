@@ -1,17 +1,13 @@
 export type TranslationEngine = 'google-gtx' | 'libretranslate' | 'mymemory' | 'lingva';
 
-export type SelectionMode = 'hover-click' | 'pin-drag';
-
 export type TriggerMode = 'hover' | 'click' | 'full-auto' | 'replace-native';
 
 export interface ExtensionSettings {
+  settingsSchemaVersion: number;
   targetLanguage: string;
   sourceLanguage: string;
   engine: TranslationEngine;
-  selectionMode: SelectionMode;
   triggerMode: TriggerMode;
-  autoDetectPlatforms: boolean;
-  smartHeuristics: boolean;
   pauseVideoOnHover: boolean;
   enableGlowEffect: boolean;
   replaceNativeSubtitles: boolean;
@@ -19,13 +15,11 @@ export interface ExtensionSettings {
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
+  settingsSchemaVersion: 1,
   targetLanguage: 'ar',
   sourceLanguage: 'auto',
   engine: 'google-gtx',
-  selectionMode: 'hover-click',
   triggerMode: 'hover',
-  autoDetectPlatforms: true,
-  smartHeuristics: true,
   pauseVideoOnHover: true,
   enableGlowEffect: true,
   replaceNativeSubtitles: false,
@@ -78,6 +72,6 @@ export const SUPPORTED_LANGUAGES: LanguageOption[] = [
   { code: 'sv', name: 'Swedish', nativeName: 'Svenska' },
   { code: 'fa', name: 'Persian', nativeName: 'فارسی' },
   { code: 'ur', name: 'Urdu', nativeName: 'اردو' },
-  { code: 'he', name: 'Hebrew', nativeName: 'עבריت' },
+  { code: 'he', name: 'Hebrew', nativeName: 'עברית' },
   { code: 'el', name: 'Greek', nativeName: 'Ελληνικά' },
 ];
