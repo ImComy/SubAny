@@ -26,6 +26,12 @@ export interface AutoTrackState {
 
 export type HighlightMode = 'word' | 'phrase' | 'range';
 
+export interface LockedVideoEventBinding {
+  video: HTMLVideoElement;
+  event: string;
+  handler: EventListener;
+}
+
 export interface TooltipState {
   x: number;
   y: number;
@@ -35,8 +41,3 @@ export interface TooltipState {
   mode: HighlightMode;
 }
 
-export interface LockedVideoEventBinding {
-  video: HTMLVideoElement;
-  event: string;
-  handler: EventListener;
-}

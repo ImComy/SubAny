@@ -43,14 +43,31 @@ export function startMouseEvents(
   state: ContentState,
   deps: MouseEventsDeps,
 ): MouseEventsHandle {
+  let interactiveRaf: number | null = null;
+  let pendingInteractiveMove: MouseEvent | null = null;
+
   const onSelectionMove = (e: MouseEvent) => handleSelectionMouseMove(state, e);
   const onSelectionClickCapture = (e: MouseEvent) =>
     handleSelectionClick(state, deps.selection, e);
   const onSelectionContext = (e: MouseEvent) =>
     handleSelectionContextMenu(state, deps.selection, e);
 
-  const onInteractiveMove = (e: MouseEvent) =>
-    handleInteractiveMouseMove(state, deps.interactive, e);
+  const flushInteractiveMove = () => {
+    if (!pendingInteractiveMove) return;
+    const event = pendingInteractiveMove;
+    pendingInteractiveMove = null;
+    interactiveRaf = null;
+    handleInteractiveMouseMove(state, deps.interactive, event);
+  };
+
+  const onInteractiveMove = (e: MouseEvent) => {
+    if (state.isSelecting || (state.settings.triggerMode !== 'hover' && state.settings.triggerMode !== 'click')) return;
+
+    pendingInteractiveMove = e;
+    if (interactiveRaf !== null) return;
+    interactiveRaf = window.requestAnimationFrame(flushInteractiveMove);
+  };
+
   const onInteractiveClick = (e: MouseEvent) =>
     handleInteractiveClick(state, deps.interactive, e);
 
@@ -65,6 +82,12 @@ export function startMouseEvents(
 
   return {
     dispose: () => {
+      if (interactiveRaf !== null) {
+        window.cancelAnimationFrame(interactiveRaf);
+        interactiveRaf = null;
+      }
+      pendingInteractiveMove = null;
+
       window.removeEventListener('mousemove', onSelectionMove, true);
       window.removeEventListener('click', onSelectionClickCapture, true);
       window.removeEventListener('contextmenu', onSelectionContext, true);

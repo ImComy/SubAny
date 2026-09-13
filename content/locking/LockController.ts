@@ -4,7 +4,6 @@ import type { ContentState } from '../state/ContentState';
 import type { SubtitleManager } from '../../lib/SubtitleManager.ts';
 import type { DomTextSwapper } from '../replacement/DomTextSwapper';
 import { generateUniqueSelector, getVideoForElement } from '../../utils/dom';
-import { combineSubtitleLines, isUsableSubtitleLine } from '../detection/SubtitleGrouping';
 import { makeAutoRegionKey } from '../autodetect/AutoRegionKey';
 import { isValidSelectionTarget } from './LockedAnchor';
 import {
@@ -12,7 +11,7 @@ import {
   resetLockState,
   updateLockedVisualProxy,
 } from './SubtitleLock';
-import { startLockedMonitor, stopLockedMonitor } from './LockMonitor';
+import { resolveStableContainer, startLockedMonitor, stopLockedMonitor } from './LockMonitor';
 
 export interface LockControllerDeps {
   state: ContentState;
@@ -30,6 +29,9 @@ export interface LockControllerDeps {
 
   /** Tear down the video media-event monitor. Called on unlock. */
   stopVideoMonitor: () => void;
+
+  /** Run the text-translation flow whenever the locked subtitle container changes. */
+  handleSubtitleTextChange: (text: string) => Promise<void>;
 }
 
 /**
@@ -69,15 +71,9 @@ export class LockController {
 
     const videoForElement = getVideoForElement(element);
     const videoRect = videoForElement?.getBoundingClientRect() ?? null;
-    const grouped = combineSubtitleLines(element, videoRect);
+    const container = resolveStableContainer(element, videoRect);
 
-    // A user click is already a strong identification signal. Do not pass it
-    // through a generic container optimiser, because that optimiser can
-    // choose a large player ancestor or another visually unrelated element.
-    const container =
-      isUsableSubtitleLine(grouped, videoRect) && isValidSelectionTarget(grouped, videoRect)
-        ? grouped
-        : element;
+    if (!isValidSelectionTarget(container, videoRect)) return;
 
     const finalRect = container.getBoundingClientRect();
     if (finalRect.width <= 0 || finalRect.height <= 0) return;
@@ -91,6 +87,7 @@ export class LockController {
       subtitleManager.setLockedSelector(null);
       stopLockedMonitor(s);
     } else {
+      s.autoDetectionRequested = false;
       s.autoDetectionDisabled = true;
       this.deps.stopAutoDetection();
 
@@ -104,11 +101,10 @@ export class LockController {
         subanyLockedAnchor: s.lockedSubtitleAnchor,
       });
 
-      startLockedMonitor(s);
+      startLockedMonitor(s, (text) => void this.deps.handleSubtitleTextChange(text));
     }
 
     this.deps.triggerGlow(container);
-    this.deps.startVideoMonitor();
     updateLockedVisualProxy(s);
     s.notify();
   }
@@ -142,6 +138,7 @@ export class LockController {
     this.deps.subtitleManager.setLockedSelector(null);
     this.deps.stopAutoDetection();
 
+    s.autoDetectionRequested = false;
     s.autoDetectionDisabled = true;
 
     s.bilingualSubtitleText = '';

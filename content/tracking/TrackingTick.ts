@@ -2,7 +2,6 @@
 
 import type { ContentState } from '../state/ContentState';
 import type { DomTextSwapper } from '../replacement/DomTextSwapper';
-import { maintainLockedContainer } from '../locking/LockMonitor';
 import {
   handleSubtitleTextChange,
   type SubtitleTranslationDeps,
@@ -39,8 +38,10 @@ export function runTrackingTick(deps: TrackingTickDeps): void {
   const { state, domSwapper, subtitleTranslation, updateAutoDetection } = deps;
 
   if (state.settings.lockedSelector) {
-    maintainLockedContainer(state, true);
-  } else if (!state.autoDetectionDisabled && state.isAutomaticSubtitleMode()) {
+    return;
+  }
+
+  if (!state.autoDetectionDisabled && state.isAutomaticSubtitleMode()) {
     updateAutoDetection();
   }
 

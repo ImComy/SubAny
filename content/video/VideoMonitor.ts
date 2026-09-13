@@ -33,9 +33,6 @@ export interface VideoMonitorDeps {
 /**
  * Bindings currently attached by the monitor. Stored on a module-local
  * because they are per-instance ephemeral and never serialized.
- *
- * Note: distinct from `state.lockedVideoEvents`, which belongs to
- * LockMonitor and is used for the lock-recovery event set.
  */
 let bindings: LockedVideoEventBinding[] = [];
 

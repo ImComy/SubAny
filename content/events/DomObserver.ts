@@ -21,7 +21,7 @@ export interface DomObserverHandle {
   dispose: () => void;
 }
 
-const DEBOUNCE_MS = 180;
+const DEBOUNCE_MS = 240;
 
 /**
  * Attach a subtree MutationObserver to `document.body`. Debounced so a burst

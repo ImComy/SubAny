@@ -9,7 +9,7 @@ import { ContentState } from './state/ContentState';
 import type { LockedSubtitleAnchor } from './state/types';
 import { DomTextSwapper } from './replacement/DomTextSwapper';
 
-import { reattachLockedContainer, startLockedMonitor, stopLockedMonitor, maintainLockedContainer } from './locking/LockMonitor';
+import { reattachLockedContainer, startLockedMonitor, stopLockedMonitor } from './locking/LockMonitor';
 import { updateLockedVisualProxy } from './locking/SubtitleLock';
 import { LockController } from './locking/LockController';
 
@@ -18,12 +18,14 @@ import {
   cancelInteractiveHover,
   type InteractiveTranslationDeps,
 } from './translation/InteractiveTranslationController';
-import type { SubtitleTranslationDeps } from './translation/SubtitleTranslationController';
+import {
+  handleSubtitleTextChange,
+  type SubtitleTranslationDeps,
+} from './translation/SubtitleTranslationController';
 
 import { AutoDetectController } from './autodetect/AutoDetectController';
 import { runTrackingTick } from './tracking/TrackingTick';
 
-import { startDomObserver } from './events/DomObserver';
 import { startMouseEvents } from './events/MouseEvents';
 import { startKeyboardEvents } from './events/KeyboardEvents';
 import { startStorageEvents } from './events/StorageEvents';
@@ -77,6 +79,7 @@ export class ContentApp {
   private readonly selectionDeps: SelectionDeps;
 
   private readonly handles: Array<{ dispose: () => void }> = [];
+  private domObserverHandle: { dispose: () => void } | null = null;
   private glowTimer: number | null = null;
   private autoDetectionElected = false;
   private autoLeaseTimer: number | null = null;
@@ -126,6 +129,7 @@ export class ContentApp {
       stopAutoDetection: () => this.autoDetect.stop(),
       startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }),
       stopVideoMonitor: () => stopVideoMonitor(),
+      handleSubtitleTextChange: (text) => handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text),
     });
 
     this.selectionDeps = {
@@ -156,9 +160,6 @@ export class ContentApp {
 
     this.overlayController.hideYouTubeOverlays();
 
-    this.handles.push(startDomObserver(s, {
-      onDomChange: () => this.tick(),
-    }));
     this.handles.push(startMouseEvents(s, {
       selection: this.selectionDeps,
       interactive: this.interactiveDeps,
@@ -201,6 +202,8 @@ export class ContentApp {
     }
     this.handles.length = 0;
 
+    this.domObserverHandle?.dispose();
+    this.domObserverHandle = null;
     stopLockedMonitor(this.state);
     this.autoDetect.stop();
     this.releaseAutoDetectionLease();
@@ -240,6 +243,15 @@ export class ContentApp {
   // Settings
   // ---------------------------------------------------------------------
 
+  private syncDomObserver(): void {
+    // Global DOM observation is intentionally disabled for active subtitle
+    // tracking; it is far more expensive than the lock-local observer and the
+    // periodic auto-detection pulse. Keep the hook in place for future
+    // opt-in modes, but never attach it during normal operation.
+    this.domObserverHandle?.dispose();
+    this.domObserverHandle = null;
+  }
+
   private async loadSettings(): Promise<void> {
     const s = this.state;
 
@@ -251,6 +263,7 @@ export class ContentApp {
 
       if (stored?.subanySettings) {
         s.settings = { ...DEFAULT_SETTINGS, ...(stored.subanySettings as Partial<ExtensionSettings>) };
+        s.autoDetectionRequested = s.isAutomaticSubtitleMode();
         if (s.settings.lockedSelector) {
           this.subtitleManager.setLockedSelector(s.settings.lockedSelector);
         }
@@ -268,9 +281,10 @@ export class ContentApp {
 
     s.notify();
     this.syncActiveContainer();
+    this.syncDomObserver();
 
     if (s.settings.lockedSelector) {
-      startLockedMonitor(s);
+      startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
     } else if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) {
       void this.ensureAutoDetectionLease();
     }
@@ -296,22 +310,24 @@ export class ContentApp {
       oldSettings.replaceNativeSubtitles !== s.settings.replaceNativeSubtitles
     ) {
       s.autoDetectionDisabled = false;
+      s.autoDetectionRequested = s.isAutomaticSubtitleMode();
       s.autoTracks.clear();
     }
 
     if (s.settings.lockedSelector) {
       this.releaseAutoDetectionLease();
       this.autoDetect.stop();
-      startLockedMonitor(s);
+      startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
     } else {
       stopLockedMonitor(s);
-      if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) void this.ensureAutoDetectionLease();
+      if (s.autoDetectionRequested && !s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) void this.ensureAutoDetectionLease();
     }
 
     if (s.settings.triggerMode !== 'full-auto') s.bilingualSubtitleText = '';
 
     s.notify();
     this.syncActiveContainer();
+    this.syncDomObserver();
   }
 
   /**
@@ -332,13 +348,11 @@ export class ContentApp {
         if (!s.glowTargetEl) this.triggerGlow(reattached);
         return;
       }
-      // The selector can be temporarily stale while a player is rebuilding.
-      // Keep the logical lock alive and let the locked monitor recover it.
-      startLockedMonitor(s);
+      startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
       return;
     }
 
-    if (s.autoDetectionDisabled) return;
+    if (!s.autoDetectionRequested || s.autoDetectionDisabled) return;
 
     if (s.isAutomaticSubtitleMode()) {
       void this.ensureAutoDetectionLease();
@@ -373,7 +387,6 @@ export class ContentApp {
     const s = this.state;
     if (s.settings.lockedSelector || s.lockedSubtitleAnchor) {
       updateLockedVisualProxy(s);
-      maintainLockedContainer(s, true);
     }
   };
 
@@ -388,7 +401,7 @@ export class ContentApp {
 
   private async ensureAutoDetectionLease(): Promise<void> {
     const s = this.state;
-    if (s.settings.lockedSelector || s.autoDetectionDisabled || !s.isAutomaticSubtitleMode()) {
+    if (s.settings.lockedSelector || !s.autoDetectionRequested || s.autoDetectionDisabled || !s.isAutomaticSubtitleMode()) {
       this.autoDetect.stop();
       return;
     }

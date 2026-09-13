@@ -16,7 +16,7 @@ import { isPlaybackTimeText, normalizeSubtitleText } from '../../utils/text';
 import { collectAutoSubtitleCandidates } from './AutoDetectScorer';
 import { pruneStaleTracks, rankEligibleTracks, upsertTrack, pickStickyTrack } from './AutoTrackStore';
 
-const AUTO_SCAN_INTERVAL_MS = 280;
+const AUTO_SCAN_INTERVAL_MS = 420;
 const AUTO_EMPTY_GRACE_MS = 750;
 const AUTO_TRACK_MAX_AGE_MS = 2800;
 
@@ -56,6 +56,13 @@ export class AutoDetectController {
     ) {
       return;
     }
+
+    const candidates = collectAutoSubtitleCandidates();
+    if (candidates.length === 0 && !s.activeContainerEl) {
+      s.autoDetectionRunning = false;
+      return;
+    }
+
     s.autoDetectionRunning = true;
     s.autoDetectionTimer = window.setInterval(() => this.tick(), AUTO_SCAN_INTERVAL_MS);
     this.tick();
@@ -182,6 +189,7 @@ export class AutoDetectController {
     if (s.isReplaceNativeMode()) this.domSwapper.restore();
     if (s.settings.triggerMode === 'full-auto') s.bilingualSubtitleText = '';
 
+    this.stop();
     s.notify();
   }
 

@@ -1,128 +1,71 @@
 // locking/LockMonitor.ts
 
 import type { ContentState } from '../state/ContentState';
-import { getVideoForElement } from '../../utils/dom';
-import { combineSubtitleLines } from '../detection/SubtitleGrouping';
-import { isHealthyLockedElement } from './LockedAnchor';
-import {
-  rememberLockedAnchor,
-  updateLockedVisualProxy,
-} from './SubtitleLock';
-import { tryRecoverLockedContainer } from './LockRecovery';
+import { normalizeSubtitleText } from '../../utils/text';
 
-/**
- * One tick of lock maintenance.
- *
- * Fast path: the live element is healthy — optionally re-group stacked lines
- * and re-anchor on `force`. Slow path: selector is ied —
- * hand off to `tryRecoverLockedContainer`.
- *
- * `force` is used by media events where we know the player is about to (or
- * has just) rebuilt its overlay. It bypasses the 70 ms rate-limit and also
- * refreshes the anchor snapshot after recovery.
- */
-export function maintainLockedContainer(state: ContentState, force = false): void {
-  if (
-    (!state.settings.lockedSelector && !state.lockedSubtitleAnchor) ||
-    state.isRefreshingLockedContainer
-  ) {
-    return;
-  }
+export function resolveStableContainer(clickedElement: HTMLElement, videoRect: DOMRect | null): HTMLElement {
+  const leafRect = clickedElement.getBoundingClientRect();
+  let current: HTMLElement | null = clickedElement;
+  let lastRemembered: HTMLElement | null = clickedElement;
+  const controlSelector = 'video, button, input, [role="button"], [role="slider"]';
 
-  const now = performance.now();
-  if (!force && now - state.lastLockedReattachAt < 70) return;
-  state.lastLockedReattachAt = now;
+  for (let i = 0; i < 8 && current && current !== document.body; i++) {
+    const rect = current.getBoundingClientRect();
 
-  updateLockedVisualProxy(state);
-  const activeHealthy = isHealthyLockedElement(state.activeContainerEl);
-
-  let needsRecovery = !activeHealthy;
-
-  // A selector resolving is NOT enough. This specifically fixes players that
-  // leave a stale wrapper mounted while its actual subtitle child is removed
-  // for a fraction of a second.
-  if (!needsRecovery && state.settings.lockedSelector) {
-    try {
-      const selectorTarget = document.querySelector(state.settings.lockedSelector) as HTMLElement | null;
-      if (!isHealthyLockedElement(selectorTarget)) needsRecovery = true;
-    } catch (_) {
-      needsRecovery = true;
+    if (videoRect) {
+      if (rect.width > videoRect.width * 1.05) break;
+      if (rect.height > Math.min(videoRect.height * 0.30, 400)) break;
+      if (current.matches(controlSelector) || !!current.querySelector(controlSelector)) break;
     }
-  }
 
-  // Even when the current element is healthy, re-group its stacked lines.
-  // This catches players that keep one line and replace only the other.
-  if (!needsRecovery && state.activeContainerEl) {
-    const video = getVideoForElement(state.activeContainerEl);
-    const grouped = combineSubtitleLines(state.activeContainerEl, video?.getBoundingClientRect() ?? null);
-    if (isHealthyLockedElement(grouped)) {
-      if (grouped !== state.activeContainerEl) {
-        state.activeContainerEl = grouped;
-        if (force) rememberLockedAnchor(state, grouped);
-        state.notify();
-      } else if (force) {
-        rememberLockedAnchor(state, grouped);
-      }
-      return;
+    if (rect.width >= leafRect.width * 0.9) {
+      lastRemembered = current;
     }
-    needsRecovery = true;
+
+    current = current.parentElement;
   }
 
-  if (!needsRecovery) return;
+  return lastRemembered ?? clickedElement;
+}
 
-  state.isRefreshingLockedContainer = true;
-  try {
-    tryRecoverLockedContainer(state);
-    updateLockedVisualProxy(state);
-    state.notify();
-  } finally {
-    state.isRefreshingLockedContainer = false;
+export function maintainLockedContainer(state: ContentState): void {
+  if (!state.activeContainerEl) return;
+  if (!document.documentElement.contains(state.activeContainerEl)) {
+    state.activeContainerEl = null;
+    state.settings.lockedSelector = null;
   }
 }
 
 export function stopLockedMonitor(state: ContentState): void {
-  if (state.lockedMonitorTimer !== null) {
-    window.clearInterval(state.lockedMonitorTimer);
-    state.lockedMonitorTimer = null;
-  }
-  for (const binding of state.lockedVideoEvents) {
-    binding.video.removeEventListener(binding.event, binding.handler);
-  }
-  state.lockedVideoEvents = [];
+  state.lockedContainerObserver?.disconnect();
+  state.lockedContainerObserver = null;
 }
 
-/**
- * Attach the interval + media event listeners. Safe to call repeatedly — it
- * always tears down previous bindings first.
- */
-export function startLockedMonitor(state: ContentState): void {
+export function startLockedMonitor(
+  state: ContentState,
+  onTextChange?: (text: string) => void,
+): void {
   stopLockedMonitor(state);
 
-  // MutationObserver + media events catch most rebuilds. The lightweight
-  // interval handles players that mutate through shadow/native internals
-  // without producing a useful DOM mutation, and it also catches brief
-  // cue teardown/recreation windows during seeking/rate changes.
-  state.lockedMonitorTimer = window.setInterval(() => maintainLockedContainer(state), 140);
+  const container = state.activeContainerEl;
+  if (!container || !onTextChange) return;
 
-  const events = [
-    'ratechange', 'seeking', 'seeked', 'playing', 'play', 'pause', 'canplay',
-    'loadedmetadata', 'durationchange', 'emptied', 'waiting', 'stalled',
-    'timeupdate', 'progress',
-  ];
-
-  for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
-    for (const event of events) {
-      const handler = (() => { maintainLockedContainer(state, true); }) as EventListener;
-      video.addEventListener(event, handler, { passive: true });
-      state.lockedVideoEvents.push({ video, event, handler });
+  const observer = new MutationObserver(() => {
+    const nextText = normalizeSubtitleText(container.textContent ?? '');
+    if (nextText !== state.lastObservedSubtitleText) {
+      onTextChange(nextText);
     }
-  }
+  });
+
+  observer.observe(container, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  state.lockedContainerObserver = observer;
 }
 
-/**
- * Public entry point used by the app when it needs a synchronous reattach
- * (e.g. on mode change).
- */
-export function reattachLockedContainer(state: ContentState): HTMLElement | null {
-  return tryRecoverLockedContainer(state);
+export function reattachLockedContainer(_state: ContentState): HTMLElement | null {
+  return _state.activeContainerEl;
 }

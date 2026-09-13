@@ -3,6 +3,25 @@
 import type { ContentState } from '../state/ContentState';
 import { getHitAt, type UniversalHit } from './SubtitleHitTester';
 
+function isPointerNearSubtitleBand(clientX: number, clientY: number, padding = 32): boolean {
+  const videos = document.querySelectorAll('video');
+  for (const video of videos) {
+    const rect = video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const bandTop = rect.top + rect.height * 0.55;
+    const bandBottom = rect.bottom;
+    if (
+      clientX >= rect.left - padding &&
+      clientX <= rect.right + padding &&
+      clientY >= bandTop - padding &&
+      clientY <= bandBottom + padding
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Lifecycle callbacks the selection layer needs to talk back to the app.
  * Everything outside the selection state machine is injected so this folder
@@ -73,17 +92,29 @@ export function cancelSelection(
 export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): void {
   if (!state.isSelecting) return;
 
-  const hit = getHitAt(e.clientX, e.clientY);
-  state.selectionCandidateEl = hit.element;
-  state.virtualSelectionHit = hit.native;
-
-  // A virtual/native subtitle cannot be represented by an HTMLElement, but
-  // SubtitleOverlay can still use the native cue's rectangle.
-  if (!hit.element && hit.native) {
-    state.hoveredWordRect = hit.native.rect;
-  } else if (!hit.element) {
+  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 32)) {
+    state.selectionCandidateEl = null;
+    state.virtualSelectionHit = null;
     state.hoveredWordRect = null;
+    return;
   }
+
+  const hit = getHitAt(e.clientX, e.clientY);
+  const nextElement = hit.element;
+  const nextNative = hit.native;
+  const nextRect = !nextElement && nextNative ? nextNative.rect : null;
+
+  if (
+    state.selectionCandidateEl === nextElement &&
+    state.virtualSelectionHit === nextNative &&
+    state.hoveredWordRect === nextRect
+  ) {
+    return;
+  }
+
+  state.selectionCandidateEl = nextElement;
+  state.virtualSelectionHit = nextNative;
+  state.hoveredWordRect = nextRect;
 
   state.notify();
 }

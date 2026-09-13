@@ -5,7 +5,6 @@ import type {
   AutoTrackState,
   HighlightMode,
   LockedSubtitleAnchor,
-  LockedVideoEventBinding,
   TooltipState,
 } from './types';
 
@@ -53,15 +52,13 @@ export class ContentState {
   lockedVideoSignature = '';
   lockedVisualProxyEl: HTMLDivElement | null = null;
   lockedVisualProxyStyle: CSSStyleDeclaration | null = null;
-  lockedMonitorTimer: number | null = null;
-  lastLockedReattachAt = 0;
-  isRefreshingLockedContainer = false;
-  lockedVideoEvents: LockedVideoEventBinding[] = [];
+  lockedContainerObserver: MutationObserver | null = null;
 
   // Auto-tracking.
   autoDetectionTimer: number | null = null;
   autoDetectionRunning = false;
   autoDetectionDisabled = false;
+  autoDetectionRequested = false;
   autoDetectedElement: HTMLElement | null = null;
   autoDetectedVideo: HTMLVideoElement | null = null;
   autoDetectedTrackKey: string | null = null;
@@ -79,9 +76,17 @@ export class ContentState {
 
   // Render hook, installed by ContentRenderer.
   onRender: (() => void) | null = null;
+  private renderScheduled = false;
 
   notify(): void {
-    this.onRender?.();
+    if (!this.onRender) return;
+    if (this.renderScheduled) return;
+
+    this.renderScheduled = true;
+    window.requestAnimationFrame(() => {
+      this.renderScheduled = false;
+      this.onRender?.();
+    });
   }
 
   // Mode helpers (kept here so every controller uses the same source of truth).

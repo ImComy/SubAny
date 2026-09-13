@@ -13,6 +13,25 @@ import {
   resetRangeAnchor,
 } from './TranslationState';
 
+function isPointerNearSubtitleBand(clientX: number, clientY: number, padding = 28): boolean {
+  const videos = document.querySelectorAll('video');
+  for (const video of videos) {
+    const rect = video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const bandTop = rect.top + rect.height * 0.55;
+    const bandBottom = rect.bottom;
+    if (
+      clientX >= rect.left - padding &&
+      clientX <= rect.right + padding &&
+      clientY >= bandTop - padding &&
+      clientY <= bandBottom + padding
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface InteractiveTranslationDeps {
   translationManager: TranslationManager;
   videoController: VideoController;
@@ -128,7 +147,9 @@ export function handleInteractiveMouseMove(
   deps: InteractiveTranslationDeps,
   e: MouseEvent,
 ): void {
-  if (state.isSelecting) return;
+  if (state.isSelecting || state.settings.triggerMode !== 'hover') return;
+  if (!state.activeContainerEl && !state.tooltipState && !state.hoveredWordRect && !state.virtualSelectionHit) return;
+  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28) && !state.tooltipState && !state.hoveredWordRect) return;
 
   const universalHit = getHitAt(e.clientX, e.clientY);
   const overDomSubtitle = isOverActiveContainer(state, e);
@@ -139,15 +160,13 @@ export function handleInteractiveMouseMove(
       state.hoveredWordRect = universalHit.native.rect;
     }
 
-    if (state.settings.triggerMode === 'hover') {
-      if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
-      hoverWordTimeout = window.setTimeout(() => {
-        const extraction = extractAtUniversal(state, e);
-        if (extraction.text) {
-          void doTranslate(state, deps, extraction, e.clientX, e.clientY);
-        }
-      }, 35);
-    }
+    if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
+    hoverWordTimeout = window.setTimeout(() => {
+      const extraction = extractAtUniversal(state, e);
+      if (extraction.text) {
+        void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+      }
+    }, 35);
   } else if (state.tooltipState || state.hoveredWordRect) {
     clearInteractiveTranslation(state);
     state.notify();
@@ -167,15 +186,15 @@ export function handleInteractiveClick(
   deps: InteractiveTranslationDeps,
   e: MouseEvent,
 ): void {
-  if (state.isSelecting) return;
+  if (state.isSelecting || state.settings.triggerMode !== 'click') return;
+  if (!state.activeContainerEl && !state.virtualSelectionHit) return;
+  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28)) return;
 
   const universalHit = getHitAt(e.clientX, e.clientY);
   if (isOverActiveContainer(state, e) || universalHit.native) {
-    if (state.settings.triggerMode === 'click') {
-      const extraction = extractAtUniversal(state, e);
-      if (extraction.text) {
-        void doTranslate(state, deps, extraction, e.clientX, e.clientY);
-      }
+    const extraction = extractAtUniversal(state, e);
+    if (extraction.text) {
+      void doTranslate(state, deps, extraction, e.clientX, e.clientY);
     }
   }
 }
