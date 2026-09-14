@@ -19,16 +19,6 @@ export interface AutoCandidate {
   key: string;
 }
 
-/**
- * Score a candidate specifically for auto-detection.
- *
- * Builds on `scoreSubtitleCandidate`, then adds video-relative positional
- * bonuses (bottom-centred band) and requires at least one strong
- * subtitle-specific presentation signal so the automatic mode stays
- * conservative.
- *
- * Matches the original `scoreAutoCandidate`.
- */
 export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement | null): number {
   const videoRect = video?.getBoundingClientRect() ?? null;
   if (isPlayerControlRegion(element, videoRect)) return -Infinity;
@@ -77,10 +67,15 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
 }
 
 /**
- * Gather all plausible auto-detection candidates on the page and reduce
- * them to one entry per quantized region key.
+ * Gather all plausible auto-detection candidates on the page.
  *
- * Matches the original `collectAutoSubtitleCandidates`.
+ * Pure geometric walk of each video's player subtree. No class-name queries.
+ *
+ * Cost control:
+ *   - `textContent` is read first (no layout reflow) as a free filter.
+ *   - `getBoundingClientRect` is only called on elements whose text
+ *     already looks like a subtitle.
+ *   - Walk is capped at 300 elements visited per video.
  */
 export function collectAutoSubtitleCandidates(): AutoCandidate[] {
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
@@ -99,49 +94,64 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
     const videoRect = video.getBoundingClientRect();
     if (videoRect.width <= 0 || videoRect.height <= 0) continue;
 
-    const parent = video.parentElement;
-    if (!parent) continue;
+    const scope = video.parentElement?.parentElement ?? video.parentElement;
+    if (!scope) continue;
 
-    const sel = '[class*="caption" i], [class*="sub" i], [class*="cue" i], [class*="timedtext" i]';
-    let candidates = Array.from(parent.querySelectorAll(sel)) as HTMLElement[];
+    const walkStack: HTMLElement[] = [scope];
+    let visited = 0;
+    const MAX_VISITS = 300;
 
-    // Fallback if parent is a minimal single-child wrapper
-    if (candidates.length === 0 && parent.parentElement && parent.children.length <= 2) {
-      candidates = Array.from(parent.parentElement.querySelectorAll(sel)) as HTMLElement[];
-    }
-
-    console.log('[SubAny] candidates:', candidates.map(c => ({ cls: c.className, w: c.getBoundingClientRect().width })));
-
-    // Filter out ancestors. For each candidate, if it contains another candidate in the same list, drop the ancestor. You want leaves, not wrappers:
-    const leaves = candidates.filter((c) => !candidates.some((o) => o !== c && c.contains(o)));
-
-    for (const el of leaves) {
-      if (!el || visitedElements.has(el)) continue;
-      visitedElements.add(el);
+    while (walkStack.length > 0 && visited < MAX_VISITS) {
+      const el = walkStack.pop()!;
+      visited++;
 
       if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
-      if (el.matches('video, audio, button, input, select, textarea, [role="button"], [role="slider"]')) continue;
+      if (visitedElements.has(el)) continue;
+      visitedElements.add(el);
 
-      const rect = el.getBoundingClientRect();
-      // Hard size cap before scoring: skip any candidate whose rect is wider than 90% of the video width and taller than 15% of the video height
-      if (rect.width > videoRect.width * 0.90 && rect.height > videoRect.height * 0.15) {
-        continue;
+      const tag = el.tagName.toLowerCase();
+      if (['video', 'audio', 'button', 'input', 'select', 'textarea', 'svg', 'path', 'script', 'style'].includes(tag)) continue;
+      if (el.matches('[role="button"], [role="slider"], [role="progressbar"]')) continue;
+
+      // Free filter: textContent does not force layout. Skip elements with
+      // no plausible subtitle text before ever touching geometry.
+      const text = normalizeSubtitleText(el.textContent ?? '');
+      const textLooksLikeSubtitle =
+        text.length >= 2 &&
+        text.length <= 400 &&
+        isSubtitleText(text) &&
+        !isPlaybackTimeText(text);
+
+      if (textLooksLikeSubtitle) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const insideVideo =
+            rect.left >= videoRect.left - 20 &&
+            rect.right <= videoRect.right + 20 &&
+            rect.top >= videoRect.top - 20 &&
+            rect.bottom <= videoRect.bottom + 20;
+
+          const inSubtitleBand = rect.top >= videoRect.top + videoRect.height * 0.35;
+
+          const tooBig =
+            rect.width > videoRect.width * 0.90 &&
+            rect.height > videoRect.height * 0.15;
+
+          if (insideVideo && inSubtitleBand && !tooBig) {
+            if (isUsableSubtitleLine(el, videoRect) && !isPlayerControlRegion(el, videoRect)) {
+              const score = scoreAutoCandidate(el, video);
+              if (Number.isFinite(score) && score >= 50) {
+                raw.push({ element: el, video, score, text });
+              }
+            }
+          }
+        }
       }
-      if (rect.width <= 0 || rect.height <= 0) continue;
 
-      if (!isUsableSubtitleLine(el, videoRect)) continue;
-
-      // Zero forced reflow: uses textContent
-      const text = normalizeSubtitleText(el.textContent || '');
-      if (!text || !isSubtitleText(text)) continue;
-
-      if (isPlayerControlRegion(el, videoRect)) continue;
-
-      const score = scoreAutoCandidate(el, video);
-      if (!Number.isFinite(score) || score < 50) continue;
-      if (isPlaybackTimeText(text)) continue;
-
-      raw.push({ element: el, video, score, text });
+      // Descend into children. Prune by tag: skip already-processed subtrees.
+      for (let i = 0; i < el.children.length; i++) {
+        walkStack.push(el.children[i] as HTMLElement);
+      }
     }
   }
 
@@ -162,7 +172,7 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
 
     if (isPlayerControlRegion(finalElement, videoRect)) continue;
 
-    const finalText = normalizeSubtitleText(finalElement.textContent || '');
+    const finalText = normalizeSubtitleText(finalElement.textContent ?? '');
     if (!finalText || !isSubtitleText(finalText)) continue;
 
     const finalScore = scoreAutoCandidate(finalElement, candidate.video);

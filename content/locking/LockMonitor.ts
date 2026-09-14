@@ -3,9 +3,25 @@
 import type { ContentState } from '../state/ContentState';
 import { normalizeSubtitleText } from '../../utils/text';
 
+/**
+ * Walk up from a clicked subtitle leaf to the stable caption container.
+ *
+ * Purely geometric:
+ *   - Reject any ancestor that contains buttons, sliders, or the video.
+ *   - Reject any ancestor wider than 90% of the video AND taller than 15%
+ *     (this is the player wrapper).
+ *   - Reject any ancestor wider than 98% of the video.
+ *   - Reject any ancestor taller than 35% of the video (capped at 300px).
+ *
+ * Among the ancestors that survive, prefer one whose class name contains
+ * caption/cue/timedtext (this is a strong, portable signal — every player
+ * names caption layers similarly). If none, use the highest surviving
+ * ancestor, which is the caption container on every layout we've tested.
+ */
 export function resolveStableContainer(clickedElement: HTMLElement, videoRect: DOMRect | null): HTMLElement {
   let current: HTMLElement | null = clickedElement;
   let bestContainer: HTMLElement = clickedElement;
+  let highestStable: HTMLElement = clickedElement;
   const controlSelector = 'video, button, input, [role="button"], [role="slider"]';
 
   for (let i = 0; i < 6 && current && current !== document.body && current !== document.documentElement; i++) {
@@ -21,27 +37,40 @@ export function resolveStableContainer(clickedElement: HTMLElement, videoRect: D
     }
 
     const className = typeof current.className === 'string' ? current.className : '';
+
+    // Explicit caption-window match wins immediately. This is the leaf-most
+    // stable container across every player we've tested.
     const isExplicitCaptionWindow =
       /(caption-window|ytp-caption-window|subtitle-window|captions-display|cue-container)/i.test(className) &&
       !className.includes('caption-window-container');
     if (isExplicitCaptionWindow) {
-      bestContainer = current;
-      break;
+      return current;
     }
 
+    // Semantic class match: remember it, but keep walking in case there is
+    // an even more specific one above.
     if (/(caption|subtitle|cue|timedtext)/i.test(className) && !className.startsWith('subany-')) {
       bestContainer = current;
-    } else if (bestContainer === clickedElement && current.parentElement) {
-      bestContainer = current;
     }
+
+    // Track the highest stable ancestor as fallback.
+    highestStable = current;
 
     current = current.parentElement;
   }
 
-  console.log('[SubAny] locked container:', bestContainer.className, bestContainer.getBoundingClientRect());
-  return bestContainer;
+  return bestContainer !== clickedElement ? bestContainer : highestStable;
 }
 
+/**
+ * Zero-scan lock maintenance.
+ *
+ * Fast path: `activeContainerEl` is connected → no-op.
+ * Slow path: one `querySelector` on the stored selector.
+ * If the selector cannot resolve, drop the active container but KEEP the
+ * selector — the player may rebuild the caption container on the next cue,
+ * and the selector will match it again.
+ */
 export function maintainLockedContainer(
   state: ContentState,
   onTextChange?: (text: string) => void,
@@ -49,26 +78,30 @@ export function maintainLockedContainer(
   const selector = state.settings.lockedSelector;
   if (!selector) return;
 
-  // 1. If activeContainerEl is still connected to the DOM, no-op (0.0001 ms)
+  // Fast path.
   if (state.activeContainerEl && document.documentElement.contains(state.activeContainerEl)) {
     return;
   }
 
-  // 2. Disconnected: try fast querySelector using the lockedSelector (0.01 ms)
+  // Slow path: single query, no scan.
   try {
     const el = document.querySelector(selector) as HTMLElement | null;
-    if (el) {
+    if (el && document.documentElement.contains(el)) {
       state.activeContainerEl = el;
       startLockedMonitor(state, onTextChange);
+      state.notify();
       return;
     }
   } catch (_) {
-    // Ignore invalid selector syntax
+    // Invalid selector syntax.
   }
 
-  // 3. Not found currently (e.g. captions unmounted during silence/pause):
-  // Do NOTHING! Do not scan player elements. Do not delete lockedSelector!
-  state.activeContainerEl = null;
+  // Container genuinely absent. Clear the active element but DO NOT clear
+  // the selector. The user's lock survives across silent gaps between cues.
+  if (state.activeContainerEl !== null) {
+    state.activeContainerEl = null;
+    state.notify();
+  }
 }
 
 export function stopLockedMonitor(state: ContentState): void {
@@ -76,6 +109,13 @@ export function stopLockedMonitor(state: ContentState): void {
   state.lockedContainerObserver = null;
 }
 
+/**
+ * Attach the MutationObserver to the locked container.
+ *
+ * The observer watches childList + subtree + characterData on the container
+ * itself. This fires on every cue change with zero layout cost, because it
+ * reads `textContent` (V8 string property) rather than `innerText`.
+ */
 export function startLockedMonitor(
   state: ContentState,
   onTextChange?: (text: string) => void,
@@ -86,16 +126,16 @@ export function startLockedMonitor(
   if (!container || !onTextChange) return;
 
   const observer = new MutationObserver(() => {
-    // Zero forced reflow: uses textContent
     const nextText = normalizeSubtitleText(container.textContent ?? '');
-    if (nextText !== state.lastObservedSubtitleText) {
-      if (!nextText) {
-        state.bilingualSubtitleText = '';
-        state.lastObservedSubtitleText = '';
-        state.notify();
-      } else {
-        onTextChange(nextText);
-      }
+    if (nextText === state.lastObservedSubtitleText) return;
+
+    if (!nextText) {
+      // Empty cue between sentences. Clear the display, keep the lock.
+      state.bilingualSubtitleText = '';
+      state.lastObservedSubtitleText = '';
+      state.notify();
+    } else {
+      onTextChange(nextText);
     }
   });
 

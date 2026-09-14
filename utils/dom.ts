@@ -1,3 +1,5 @@
+// utils/dom.ts
+
 import { isSubtitleText } from './text';
 
 export function getDomDepth(el: Node): number {
@@ -31,6 +33,8 @@ export function getLowestCommonHTMLElement(elements: HTMLElement[]): HTMLElement
 }
 
 // Traverse DOM, Shadow DOM, and same-origin iframes.
+// NOTE: Only use outside hot paths. Never call this in a tick, timer,
+// or pointer handler on a large page.
 export function getAllElements(root: Node | ShadowRoot): HTMLElement[] {
   const elements: HTMLElement[] = [];
   const walker = document.createTreeWalker(
@@ -68,7 +72,8 @@ export function getDeepestTextContainer(el: HTMLElement): HTMLElement {
 
     if (children.length === 1) {
       const child = children[0] as HTMLElement;
-      if (child.innerText?.trim() === current.innerText?.trim()) {
+      // Use textContent, never innerText, to avoid forced layout.
+      if (child.textContent?.trim() === current.textContent?.trim()) {
         if (child.children.length === 0) {
           current = child;
           break;
@@ -174,43 +179,41 @@ export function generateUniqueSelector(element: HTMLElement): string {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
     return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   };
-  const attribute = ['data-testid', 'data-test', 'aria-label'].find((name) => element.hasAttribute(name));
-  if (attribute) return `${element.tagName.toLowerCase()}[${attribute}="${escape(element.getAttribute(attribute) ?? '')}"]`;
 
-  // Do not use IDs containing numbers or counters (e.g. caption-window-1, ytp-123)
+  const attribute = ['data-testid', 'data-test', 'aria-label'].find((name) => element.hasAttribute(name));
+  if (attribute) {
+    return `${element.tagName.toLowerCase()}[${attribute}="${escape(element.getAttribute(attribute) ?? '')}"]`;
+  }
+
+  // IDs with digits are usually counters (caption-window-1, ytp-123) that
+  // change on player rebuild. Never use them.
   if (element.id && !/\d/.test(element.id) && !element.id.includes(':')) {
     return `#${escape(element.id)}`;
   }
 
-  // Check if element has stable semantic subtitle classes that form a unique selector
   const directSubtitleClasses = Array.from(element.classList).filter((name) =>
     /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
   );
   if (directSubtitleClasses.length > 0) {
     const classOnly = '.' + directSubtitleClasses.map(escape).join('.');
     try {
-      if (document.querySelectorAll(classOnly).length === 1) {
-        return classOnly;
-      }
-    } catch (_) {}
+      if (document.querySelectorAll(classOnly).length === 1) return classOnly;
+    } catch (_) { }
     const tagAndClass = element.tagName.toLowerCase() + classOnly;
     try {
-      if (document.querySelectorAll(tagAndClass).length === 1) {
-        return tagAndClass;
-      }
-    } catch (_) {}
+      if (document.querySelectorAll(tagAndClass).length === 1) return tagAndClass;
+    } catch (_) { }
   }
 
   const path: string[] = [];
   let current: HTMLElement | null = element;
   while (current && current !== document.body && current !== document.documentElement) {
     let selector = current.tagName.toLowerCase();
-    // Prefer stable subtitle-related classes
     const subtitleClass = Array.from(current.classList).find((name) =>
       /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
     );
     const primaryClass = subtitleClass || Array.from(current.classList).find((name) =>
-      !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-') && !/\d/.test(name),
+      !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
     );
     if (primaryClass) selector += `.${escape(primaryClass)}`;
 
@@ -229,21 +232,25 @@ export function generateUniqueSelector(element: HTMLElement): string {
 }
 
 /**
- * Accurately finds the subtitle element at client coordinates (clientX, clientY).
+ * Find the subtitle element under a point, universally.
  *
- * First checks document.elementsFromPoint. If pointer-events: none prevented captions
- * from appearing in the hit stack (common on YouTube), falls back to walking up from
- * the click to the video's parent, querySelectorAll('[class*="caption" i],[class*="cue" i],[class*="timedtext" i]')
- * scoped to that parent, and returning the candidate whose bounding rect contains the click point.
+ * Two paths:
+ *   1. `elementsFromPoint` — fast path. Works on every site whose captions
+ *      have pointer-events enabled (most sites).
+ *   2. Geometric walk — fallback. Required when captions have
+ *      `pointer-events: none` (YouTube). No class names. Pruned by
+ *      containment: only descends into subtrees that contain the click.
  */
 export function getSubtitleElementAtPoint(
   clientX: number,
   clientY: number,
-  clickTarget?: HTMLElement | null
+  clickTarget?: HTMLElement | null,
 ): HTMLElement | null {
-  const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
+  // ---- 1. Hit-stack fast path ----
+  const stack = (document.elementsFromPoint
+    ? document.elementsFromPoint(clientX, clientY)
+    : []) as HTMLElement[];
 
-  // 1. Check if elementsFromPoint hit a valid subtitle element
   for (const el of stack) {
     if (!el || el === document.body || el === document.documentElement) continue;
     if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
@@ -252,82 +259,100 @@ export function getSubtitleElementAtPoint(
     if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
     if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
 
-    const text = el.textContent?.trim() || '';
+    const text = (el.textContent ?? '').trim();
     if (text.length >= 1 && text.length <= 400 && isSubtitleText(text)) {
       return getDeepestTextContainer(el);
     }
   }
 
-  // 2. Fallback: Captions often have pointer-events: none (e.g. YouTube), so elementsFromPoint misses them.
-  // Walk up from the click to the video's parent element.
-  let videoParent: HTMLElement | null = null;
+  // ---- 2. Geometric fallback (no class names) ----
+
+  // Find the video under the click, either via the click target's ancestry
+  // or by rect hit-testing.
+  let video: HTMLVideoElement | null = null;
+
   if (clickTarget) {
     let cur: HTMLElement | null = clickTarget;
     while (cur && cur !== document.body && cur !== document.documentElement) {
       if (cur.tagName.toLowerCase() === 'video') {
-        videoParent = cur.parentElement;
+        video = cur as HTMLVideoElement;
         break;
       }
       const v = cur.querySelector('video');
-      if (v) {
-        videoParent = v.parentElement ?? cur;
-        break;
-      }
+      if (v) { video = v as HTMLVideoElement; break; }
       cur = cur.parentElement;
     }
   }
 
-  if (!videoParent) {
+  if (!video) {
     const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
-    const nearestVideo = videos.find((v) => {
-      const r = v.getBoundingClientRect();
-      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
-    }) ?? videos[0] ?? null;
-    if (nearestVideo) {
-      videoParent = nearestVideo.parentElement;
+    video =
+      videos.find((v) => {
+        const r = v.getBoundingClientRect();
+        return (
+          clientX >= r.left && clientX <= r.right &&
+          clientY >= r.top && clientY <= r.bottom
+        );
+      }) ?? null;
+  }
+
+  if (!video) return null;
+
+  const vr = video.getBoundingClientRect();
+  if (vr.width <= 0 || vr.height <= 0) return null;
+
+  // Scope: two levels up from the video. On YouTube this lands on
+  // `.html5-video-player`, which holds the caption layer.
+  const scope = video.parentElement?.parentElement ?? video.parentElement;
+  if (!scope) return null;
+
+  // Bounded pruned walk. Only descends into subtrees that contain the click.
+  let best: HTMLElement | null = null;
+  let bestArea = Infinity;
+  const walkStack: HTMLElement[] = [scope];
+  let visited = 0;
+  const MAX_VISITS = 500;
+
+  while (walkStack.length > 0 && visited < MAX_VISITS) {
+    const el = walkStack.pop()!;
+    visited++;
+
+    if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
+
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+
+    // Containment: if the click is not inside this element, skip its subtree
+    // entirely. This is the pruning that keeps the walk cheap.
+    if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) {
+      continue;
+    }
+
+    // Descend into children for a smaller match.
+    for (let i = 0; i < el.children.length; i++) {
+      walkStack.push(el.children[i] as HTMLElement);
+    }
+
+    // Must be in the lower portion of the video (subtitles band). Allow
+    // anything below the midpoint — top-anchored captions are rare, and
+    // the click will confirm correctness anyway.
+    if (r.top < vr.top + vr.height * 0.35) continue;
+
+    // Size cap: a subtitle leaf cannot be nearly the whole video.
+    if (r.width > vr.width * 0.90 && r.height > vr.height * 0.15) continue;
+
+    const text = (el.textContent ?? '').trim();
+    if (text.length < 2 || text.length > 400) continue;
+    if (!isSubtitleText(text)) continue;
+
+    const area = r.width * r.height;
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
     }
   }
 
-  if (videoParent) {
-    const rawCandidates = Array.from(videoParent.querySelectorAll(
-      '[class*="caption" i], [class*="cue" i], [class*="timedtext" i]'
-    )) as HTMLElement[];
-    const leaves = rawCandidates.filter((c) => !rawCandidates.some((o) => o !== c && c.contains(o)));
-
-    for (const candidate of leaves) {
-      if (candidate.matches('button, [role="button"], [role="slider"], input')) continue;
-      const text = candidate.textContent?.trim() || '';
-      if (!text || !isSubtitleText(text)) continue;
-
-      const rect = candidate.getBoundingClientRect();
-      if (
-        clientX >= rect.left - 4 &&
-        clientX <= rect.right + 4 &&
-        clientY >= rect.top - 4 &&
-        clientY <= rect.bottom + 4
-      ) {
-        return getDeepestTextContainer(candidate);
-      }
-    }
-    // Small tolerance if click landed slightly on padding
-    for (const candidate of leaves) {
-      if (candidate.matches('button, [role="button"], [role="slider"], input')) continue;
-      const text = candidate.textContent?.trim() || '';
-      if (!text || !isSubtitleText(text)) continue;
-
-      const rect = candidate.getBoundingClientRect();
-      if (
-        clientX >= rect.left - 14 &&
-        clientX <= rect.right + 14 &&
-        clientY >= rect.top - 14 &&
-        clientY <= rect.bottom + 14
-      ) {
-        return getDeepestTextContainer(candidate);
-      }
-    }
-  }
-
-  return null;
+  return best ? getDeepestTextContainer(best) : null;
 }
 
 export function resolvePlayerContainer(element: HTMLElement): HTMLElement | null {

@@ -36,7 +36,7 @@ export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null
     return true;
   }
 
-  const ownText = normalizeSubtitleText(el.innerText || el.textContent || '');
+  const ownText = normalizeSubtitleText(el.textContent ?? '');
   if (isPlaybackTimeText(ownText)) return true;
 
   let current: HTMLElement | null = el.parentElement;
@@ -96,7 +96,7 @@ export function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMR
 }
 
 export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
-  const text = normalizeSubtitleText(el.innerText || el.textContent || '');
+  const text = normalizeSubtitleText(el.textContent ?? '');
   if (!text || !isSubtitleText(text)) return null;
   if (isPlayerControlRegion(el)) return null;
 
@@ -154,7 +154,7 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
   if (isAbsPos) { score += 5; reasons.push('abs-pos'); }
   if (!isNaN(bottom) && bottom >= 0) { score += 5; reasons.push('has-bottom'); }
 
-  // 6. Strong cue class bonus – heavily increased
+  // 6. Strong cue class bonus
   if (isCue) { score += 80; reasons.push('cue-class'); }
 
   // 7. Parent with absolute/fixed + bottom
@@ -178,7 +178,7 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
   if (hasOnlyTextOrBr) { score += 50; reasons.push('leaf-like'); }
   else if (el.children.length === 0) { score += 50; reasons.push('leaf-element'); }
 
-  // 10. Penalty for having multiple element children
+  // 10. Penalty for multiple element children
   if (el.children.length > 1 && !hasOnlyTextOrBr) { score -= 25; reasons.push('multiple-children'); }
   else if (el.children.length > 0 && !hasOnlyTextOrBr) { score -= 15; reasons.push('has-children'); }
 
@@ -191,7 +191,7 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
 
   // 13. Penalty if element has any child that is also a subtitle candidate
   const hasSubtitleChild = Array.from(el.children).some((child) => {
-    const childText = (child as HTMLElement).innerText?.trim() || '';
+    const childText = (child as HTMLElement).textContent?.trim() || '';
     return isSubtitleText(childText) && hasSubtitleClass(child as HTMLElement);
   });
   if (hasSubtitleChild) { score -= 40; reasons.push('has-subtitle-child'); }
