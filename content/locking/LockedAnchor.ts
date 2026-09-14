@@ -77,7 +77,8 @@ export function isHealthyLockedElement(element: HTMLElement | null): boolean {
   if (!element || !document.documentElement.contains(element)) return false;
 
   const text = getCurrentLockedText(element);
-  if (!text || !isSubtitleText(text)) return false;
+  // An empty container between dialogue lines is normal. Only reject if text is present but not subtitle text.
+  if (text && !isSubtitleText(text)) return false;
 
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
@@ -130,4 +131,8 @@ export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect 
   }
 
   return true;
+}
+
+export function isLockedElementConnected(element: HTMLElement | null): boolean {
+  return !!element && document.documentElement.contains(element);
 }

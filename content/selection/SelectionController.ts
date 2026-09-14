@@ -2,6 +2,8 @@
 
 import type { ContentState } from '../state/ContentState';
 import { getHitAt, type UniversalHit } from './SubtitleHitTester';
+import { getSubtitleElementAtPoint, getVideoForElement } from '../../utils/dom';
+import { resolveStableContainer } from '../locking/LockMonitor';
 
 function isPointerNearSubtitleBand(clientX: number, clientY: number, padding = 32): boolean {
   const videos = document.querySelectorAll('video');
@@ -135,26 +137,39 @@ export function handleSelectionClick(
   e.stopPropagation();
 
   const target = e.target as HTMLElement | null;
-  const activeContainsPointer = !!state.activeContainerEl && !!target && state.activeContainerEl.contains(target);
-  const chosen = activeContainsPointer
-    ? state.activeContainerEl
-    : (target && target !== document.body && target.tagName.toLowerCase() !== 'video' ? target : null);
 
-  // Case 1: real DOM subtitle element.
-  if (chosen && chosen !== document.body && chosen.tagName.toLowerCase() !== 'video') {
+  // 1. Retrieve the clicked subtitle element via getSubtitleElementAtPoint (pierces transparent overlays)
+  const clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target);
+
+  if (clickedLeaf) {
+    const video = getVideoForElement(clickedLeaf);
+    const videoRect = video?.getBoundingClientRect() ?? null;
+    const container = resolveStableContainer(clickedLeaf, videoRect);
+
     state.isSelecting = false;
     state.selectionCandidateEl = null;
     state.virtualSelectionHit = null;
     state.hoveredWordRect = null;
     state.notify();
-    void deps.lockContainer(chosen);
+
+    void deps.lockContainer(container);
     return;
   }
 
-  // Case 2: native TextTrack cue. Only attempt a fallback when the click
-  // target itself is not a known DOM subtitle. This avoids the expensive
-  // player-wide hit-test path on YouTube.
-  const hit = !chosen ? getHitAt(e.clientX, e.clientY) : { element: null, native: null, video: null };
+  // 2. Direct hit on current activeContainerEl descendant
+  if (state.activeContainerEl && target && state.activeContainerEl.contains(target)) {
+    state.isSelecting = false;
+    state.selectionCandidateEl = null;
+    state.virtualSelectionHit = null;
+    state.hoveredWordRect = null;
+    state.notify();
+
+    void deps.lockContainer(state.activeContainerEl);
+    return;
+  }
+
+  // 3. Native TextTrack cue fallback
+  const hit = getHitAt(e.clientX, e.clientY);
   if (hit.native) {
     state.isSelecting = false;
     state.selectionCandidateEl = null;
@@ -164,8 +179,7 @@ export function handleSelectionClick(
     return;
   }
 
-  // A click outside a valid subtitle is an explicit cancellation. Leaving
-  // selection active here made the UI appear stuck until a context-menu event.
+  // 4. Click outside a subtitle is an explicit cancellation
   cancelSelection(state, deps, { resumeAuto: true });
 }
 

@@ -102,6 +102,7 @@ export class LockController {
       });
 
       startLockedMonitor(s, (text) => void this.deps.handleSubtitleTextChange(text));
+      this.deps.startVideoMonitor();
     }
 
     this.deps.triggerGlow(container);

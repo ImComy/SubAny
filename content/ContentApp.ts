@@ -284,6 +284,7 @@ export class ContentApp {
     this.syncDomObserver();
 
     if (s.settings.lockedSelector) {
+      startVideoMonitor(s, { onMediaTick: () => this.tick() });
       startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
     } else if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) {
       void this.ensureAutoDetectionLease();
@@ -317,6 +318,7 @@ export class ContentApp {
     if (s.settings.lockedSelector) {
       this.releaseAutoDetectionLease();
       this.autoDetect.stop();
+      startVideoMonitor(s, { onMediaTick: () => this.tick() });
       startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
     } else {
       stopLockedMonitor(s);

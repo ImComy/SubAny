@@ -1,3 +1,5 @@
+import { isSubtitleText } from './text';
+
 export function getDomDepth(el: Node): number {
   let depth = 0;
   let current = el;
@@ -174,25 +176,165 @@ export function generateUniqueSelector(element: HTMLElement): string {
   };
   const attribute = ['data-testid', 'data-test', 'aria-label'].find((name) => element.hasAttribute(name));
   if (attribute) return `${element.tagName.toLowerCase()}[${attribute}="${escape(element.getAttribute(attribute) ?? '')}"]`;
-  if (element.id && !/^\d/.test(element.id) && !element.id.includes(':')) return `#${escape(element.id)}`;
+
+  // Do not use IDs containing numbers or counters (e.g. caption-window-1, ytp-123)
+  if (element.id && !/\d/.test(element.id) && !element.id.includes(':')) {
+    return `#${escape(element.id)}`;
+  }
+
+  // Check if element has stable semantic subtitle classes that form a unique selector
+  const directSubtitleClasses = Array.from(element.classList).filter((name) =>
+    /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
+  );
+  if (directSubtitleClasses.length > 0) {
+    const classOnly = '.' + directSubtitleClasses.map(escape).join('.');
+    try {
+      if (document.querySelectorAll(classOnly).length === 1) {
+        return classOnly;
+      }
+    } catch (_) {}
+    const tagAndClass = element.tagName.toLowerCase() + classOnly;
+    try {
+      if (document.querySelectorAll(tagAndClass).length === 1) {
+        return tagAndClass;
+      }
+    } catch (_) {}
+  }
 
   const path: string[] = [];
   let current: HTMLElement | null = element;
   while (current && current !== document.body && current !== document.documentElement) {
     let selector = current.tagName.toLowerCase();
-    const primaryClass = Array.from(current.classList).find((name) =>
-      !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-'),
+    // Prefer stable subtitle-related classes
+    const subtitleClass = Array.from(current.classList).find((name) =>
+      /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
+    );
+    const primaryClass = subtitleClass || Array.from(current.classList).find((name) =>
+      !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-') && !/\d/.test(name),
     );
     if (primaryClass) selector += `.${escape(primaryClass)}`;
 
     const parent: HTMLElement | null = current.parentElement;
     if (parent) {
       const siblings = Array.from(parent.children).filter((child: Element) => child.tagName === current!.tagName);
-      if (siblings.length > 1) selector += `:nth-child(${Array.from(parent.children).indexOf(current) + 1})`;
+      if (siblings.length > 1 && !subtitleClass) {
+        selector += `:nth-child(${Array.from(parent.children).indexOf(current) + 1})`;
+      }
     }
     path.unshift(selector);
     current = parent;
     if (path.length >= 4) break;
   }
   return path.length > 0 ? path.join(' > ') : 'body';
+}
+
+/**
+ * Accurately finds the subtitle element at client coordinates (clientX, clientY).
+ *
+ * First checks document.elementsFromPoint. If pointer-events: none prevented captions
+ * from appearing in the hit stack (common on YouTube), falls back to walking up from
+ * the click to the video's parent, querySelectorAll('[class*="caption" i],[class*="cue" i],[class*="timedtext" i]')
+ * scoped to that parent, and returning the candidate whose bounding rect contains the click point.
+ */
+export function getSubtitleElementAtPoint(
+  clientX: number,
+  clientY: number,
+  clickTarget?: HTMLElement | null
+): HTMLElement | null {
+  const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
+
+  // 1. Check if elementsFromPoint hit a valid subtitle element
+  for (const el of stack) {
+    if (!el || el === document.body || el === document.documentElement) continue;
+    if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
+    const tag = el.tagName.toLowerCase();
+    if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) continue;
+    if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
+    if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
+
+    const text = el.textContent?.trim() || '';
+    if (text.length >= 1 && text.length <= 400 && isSubtitleText(text)) {
+      return getDeepestTextContainer(el);
+    }
+  }
+
+  // 2. Fallback: Captions often have pointer-events: none (e.g. YouTube), so elementsFromPoint misses them.
+  // Walk up from the click to the video's parent element.
+  let videoParent: HTMLElement | null = null;
+  if (clickTarget) {
+    let cur: HTMLElement | null = clickTarget;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (cur.tagName.toLowerCase() === 'video') {
+        videoParent = cur.parentElement;
+        break;
+      }
+      const v = cur.querySelector('video');
+      if (v) {
+        videoParent = v.parentElement ?? cur;
+        break;
+      }
+      cur = cur.parentElement;
+    }
+  }
+
+  if (!videoParent) {
+    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    const nearestVideo = videos.find((v) => {
+      const r = v.getBoundingClientRect();
+      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+    }) ?? videos[0] ?? null;
+    if (nearestVideo) {
+      videoParent = nearestVideo.parentElement;
+    }
+  }
+
+  if (videoParent) {
+    const rawCandidates = Array.from(videoParent.querySelectorAll(
+      '[class*="caption" i], [class*="cue" i], [class*="timedtext" i]'
+    )) as HTMLElement[];
+    const leaves = rawCandidates.filter((c) => !rawCandidates.some((o) => o !== c && c.contains(o)));
+
+    for (const candidate of leaves) {
+      if (candidate.matches('button, [role="button"], [role="slider"], input')) continue;
+      const text = candidate.textContent?.trim() || '';
+      if (!text || !isSubtitleText(text)) continue;
+
+      const rect = candidate.getBoundingClientRect();
+      if (
+        clientX >= rect.left - 4 &&
+        clientX <= rect.right + 4 &&
+        clientY >= rect.top - 4 &&
+        clientY <= rect.bottom + 4
+      ) {
+        return getDeepestTextContainer(candidate);
+      }
+    }
+    // Small tolerance if click landed slightly on padding
+    for (const candidate of leaves) {
+      if (candidate.matches('button, [role="button"], [role="slider"], input')) continue;
+      const text = candidate.textContent?.trim() || '';
+      if (!text || !isSubtitleText(text)) continue;
+
+      const rect = candidate.getBoundingClientRect();
+      if (
+        clientX >= rect.left - 14 &&
+        clientX <= rect.right + 14 &&
+        clientY >= rect.top - 14 &&
+        clientY <= rect.bottom + 14
+      ) {
+        return getDeepestTextContainer(candidate);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function resolvePlayerContainer(element: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = element;
+  while (current && current !== document.body && current !== document.documentElement) {
+    if (current.querySelector('video')) return current;
+    current = current.parentElement;
+  }
+  return null;
 }

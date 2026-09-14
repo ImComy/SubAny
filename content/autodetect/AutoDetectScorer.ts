@@ -1,6 +1,5 @@
 // autodetect/AutoDetectScorer.ts
 
-import { getAllElements, getVideoContainingElement } from '../../utils/dom';
 import { isPlaybackTimeText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
 import {
   getSubtitlePresentationAncestor,
@@ -84,7 +83,9 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
  * Matches the original `collectAutoSubtitleCandidates`.
  */
 export function collectAutoSubtitleCandidates(): AutoCandidate[] {
-  const allElements = getAllElements(document);
+  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  if (videos.length === 0) return [];
+
   const raw: Array<{
     element: HTMLElement;
     video: HTMLVideoElement | null;
@@ -92,25 +93,56 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
     text: string;
   }> = [];
 
-  for (const el of allElements) {
-    if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
-    if (!isUsableSubtitleLine(el, null)) continue;
+  const visitedElements = new Set<HTMLElement>();
 
-    const text = normalizeSubtitleText(el.innerText || el.textContent || '');
-    if (!text || !isSubtitleText(text)) continue;
-
-    const video = getVideoContainingElement(el);
-    if (!video) continue;
-
+  for (const video of videos) {
     const videoRect = video.getBoundingClientRect();
     if (videoRect.width <= 0 || videoRect.height <= 0) continue;
-    if (isPlayerControlRegion(el, videoRect)) continue;
 
-    const score = scoreAutoCandidate(el, video);
-    if (!Number.isFinite(score) || score < 50) continue;
-    if (isPlaybackTimeText(text)) continue;
+    const parent = video.parentElement;
+    if (!parent) continue;
 
-    raw.push({ element: el, video, score, text });
+    const sel = '[class*="caption" i], [class*="sub" i], [class*="cue" i], [class*="timedtext" i]';
+    let candidates = Array.from(parent.querySelectorAll(sel)) as HTMLElement[];
+
+    // Fallback if parent is a minimal single-child wrapper
+    if (candidates.length === 0 && parent.parentElement && parent.children.length <= 2) {
+      candidates = Array.from(parent.parentElement.querySelectorAll(sel)) as HTMLElement[];
+    }
+
+    console.log('[SubAny] candidates:', candidates.map(c => ({ cls: c.className, w: c.getBoundingClientRect().width })));
+
+    // Filter out ancestors. For each candidate, if it contains another candidate in the same list, drop the ancestor. You want leaves, not wrappers:
+    const leaves = candidates.filter((c) => !candidates.some((o) => o !== c && c.contains(o)));
+
+    for (const el of leaves) {
+      if (!el || visitedElements.has(el)) continue;
+      visitedElements.add(el);
+
+      if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
+      if (el.matches('video, audio, button, input, select, textarea, [role="button"], [role="slider"]')) continue;
+
+      const rect = el.getBoundingClientRect();
+      // Hard size cap before scoring: skip any candidate whose rect is wider than 90% of the video width and taller than 15% of the video height
+      if (rect.width > videoRect.width * 0.90 && rect.height > videoRect.height * 0.15) {
+        continue;
+      }
+      if (rect.width <= 0 || rect.height <= 0) continue;
+
+      if (!isUsableSubtitleLine(el, videoRect)) continue;
+
+      // Zero forced reflow: uses textContent
+      const text = normalizeSubtitleText(el.textContent || '');
+      if (!text || !isSubtitleText(text)) continue;
+
+      if (isPlayerControlRegion(el, videoRect)) continue;
+
+      const score = scoreAutoCandidate(el, video);
+      if (!Number.isFinite(score) || score < 50) continue;
+      if (isPlaybackTimeText(text)) continue;
+
+      raw.push({ element: el, video, score, text });
+    }
   }
 
   raw.sort((a, b) => b.score - a.score);
@@ -130,7 +162,7 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
 
     if (isPlayerControlRegion(finalElement, videoRect)) continue;
 
-    const finalText = normalizeSubtitleText(finalElement.innerText || finalElement.textContent || '');
+    const finalText = normalizeSubtitleText(finalElement.textContent || '');
     if (!finalText || !isSubtitleText(finalText)) continue;
 
     const finalScore = scoreAutoCandidate(finalElement, candidate.video);
