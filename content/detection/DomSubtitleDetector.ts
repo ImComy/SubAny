@@ -80,12 +80,22 @@ export function findSubtitleByGeometry(clientX: number, clientY: number): HTMLEl
 }
 
 export function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLElement | null {
-  const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
   const nearestVideo = videos.find((video) => {
     const rect = video.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  }) ?? videos[0] ?? null;
+    const bandTop = rect.top + rect.height * 0.55;
+    const bandBottom = rect.bottom;
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= bandTop &&
+      clientY <= bandBottom
+    );
+  }) ?? null;
+
+  if (!nearestVideo) return null;
+
+  const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
   const vRect = nearestVideo ? nearestVideo.getBoundingClientRect() : null;
 
   const validStack = stack.filter((el) => {

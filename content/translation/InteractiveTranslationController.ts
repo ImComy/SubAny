@@ -151,18 +151,33 @@ export function handleInteractiveMouseMove(
   if (!state.activeContainerEl && !state.tooltipState && !state.hoveredWordRect && !state.virtualSelectionHit) return;
   if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28) && !state.tooltipState && !state.hoveredWordRect) return;
 
-  const universalHit = getHitAt(e.clientX, e.clientY);
-  const overDomSubtitle = isOverActiveContainer(state, e);
-  const overNativeSubtitle = !!universalHit.native;
+  const activeRect = state.activeContainerEl?.getBoundingClientRect();
+  const activeContainsPointer = !!activeRect &&
+    e.clientX >= activeRect.left - 6 &&
+    e.clientX <= activeRect.right + 6 &&
+    e.clientY >= activeRect.top - 6 &&
+    e.clientY <= activeRect.bottom + 6;
 
-  if (overDomSubtitle || overNativeSubtitle) {
-    if (overNativeSubtitle && universalHit.native) {
-      state.hoveredWordRect = universalHit.native.rect;
+  if (state.activeContainerEl && activeContainsPointer) {
+    const extraction = extractAt(state, e);
+    if (extraction.text) {
+      state.hoveredWordRect = extraction.rect;
+      if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
+      hoverWordTimeout = window.setTimeout(() => {
+        void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+      }, 35);
+      return;
     }
+  }
 
+  const hoveredTarget = e.target as HTMLElement | null;
+  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && state.activeContainerEl.contains(hoveredTarget);
+  const overDomSubtitle = activeContainsPointer || tContainsActive || isOverActiveContainer(state, e);
+
+  if (overDomSubtitle) {
     if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
     hoverWordTimeout = window.setTimeout(() => {
-      const extraction = extractAtUniversal(state, e);
+      const extraction = extractAt(state, e);
       if (extraction.text) {
         void doTranslate(state, deps, extraction, e.clientX, e.clientY);
       }
@@ -190,9 +205,25 @@ export function handleInteractiveClick(
   if (!state.activeContainerEl && !state.virtualSelectionHit) return;
   if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28)) return;
 
-  const universalHit = getHitAt(e.clientX, e.clientY);
-  if (isOverActiveContainer(state, e) || universalHit.native) {
-    const extraction = extractAtUniversal(state, e);
+  const activeRect = state.activeContainerEl?.getBoundingClientRect();
+  const activeContainsPointer = !!activeRect &&
+    e.clientX >= activeRect.left - 6 &&
+    e.clientX <= activeRect.right + 6 &&
+    e.clientY >= activeRect.top - 6 &&
+    e.clientY <= activeRect.bottom + 6;
+
+  if (state.activeContainerEl && activeContainsPointer) {
+    const extraction = extractAt(state, e);
+    if (extraction.text) {
+      void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+    }
+    return;
+  }
+
+  const hoveredTarget = e.target as HTMLElement | null;
+  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && state.activeContainerEl.contains(hoveredTarget);
+  if (activeContainsPointer || tContainsActive || isOverActiveContainer(state, e)) {
+    const extraction = extractAt(state, e);
     if (extraction.text) {
       void doTranslate(state, deps, extraction, e.clientX, e.clientY);
     }

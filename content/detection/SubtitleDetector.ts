@@ -12,13 +12,15 @@ export function getUniversalSubtitleHit(clientX: number, clientY: number): {
   native: NativeSubtitleHit | null;
   video: HTMLVideoElement | null;
 } {
+  const video = isLikelySubtitleZone(clientX, clientY);
+  if (!video) return { element: null, native: null, video: null };
+
   const element = findGenuineSubtitleCandidate(clientX, clientY);
-  if (element) return { element, native: null, video: null };
+  if (element) return { element, native: null, video };
 
   const native = findNativeSubtitleAtPoint(clientX, clientY);
   if (native) return { element: null, native, video: native.video };
 
-  const video = isLikelySubtitleZone(clientX, clientY);
   return { element: null, native: null, video };
 }
 

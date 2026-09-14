@@ -92,6 +92,11 @@ export function cancelSelection(
 export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): void {
   if (!state.isSelecting) return;
 
+  // Selection mode is click-driven for performance. Continuous subtitle
+  // hit-testing on every mousemove is the dominant CPU cost on YouTube, and
+  // the actual selection decision is still made in `handleSelectionClick`.
+  // Keep the state clean and do not force a render / DOM scan while the user
+  // merely moves the cursor.
   if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 32)) {
     state.selectionCandidateEl = null;
     state.virtualSelectionHit = null;
@@ -99,24 +104,11 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
     return;
   }
 
-  const hit = getHitAt(e.clientX, e.clientY);
-  const nextElement = hit.element;
-  const nextNative = hit.native;
-  const nextRect = !nextElement && nextNative ? nextNative.rect : null;
-
-  if (
-    state.selectionCandidateEl === nextElement &&
-    state.virtualSelectionHit === nextNative &&
-    state.hoveredWordRect === nextRect
-  ) {
-    return;
-  }
-
-  state.selectionCandidateEl = nextElement;
-  state.virtualSelectionHit = nextNative;
-  state.hoveredWordRect = nextRect;
-
-  state.notify();
+  // Do not run the expensive subtitle hit-test on every pointer move. The
+  // selection flow only needs the click target to resolve a lockable subtitle.
+  state.selectionCandidateEl = null;
+  state.virtualSelectionHit = null;
+  state.hoveredWordRect = null;
 }
 
 /**
@@ -142,8 +134,11 @@ export function handleSelectionClick(
   e.preventDefault();
   e.stopPropagation();
 
-  const hit = getHitAt(e.clientX, e.clientY);
-  const chosen = hit.element;
+  const target = e.target as HTMLElement | null;
+  const activeContainsPointer = !!state.activeContainerEl && !!target && state.activeContainerEl.contains(target);
+  const chosen = activeContainsPointer
+    ? state.activeContainerEl
+    : (target && target !== document.body && target.tagName.toLowerCase() !== 'video' ? target : null);
 
   // Case 1: real DOM subtitle element.
   if (chosen && chosen !== document.body && chosen.tagName.toLowerCase() !== 'video') {
@@ -156,8 +151,10 @@ export function handleSelectionClick(
     return;
   }
 
-  // Case 2: native TextTrack cue. There is no DOM container to lock, so keep
-  // the virtual cue alive for hover/click translation instead.
+  // Case 2: native TextTrack cue. Only attempt a fallback when the click
+  // target itself is not a known DOM subtitle. This avoids the expensive
+  // player-wide hit-test path on YouTube.
+  const hit = !chosen ? getHitAt(e.clientX, e.clientY) : { element: null, native: null, video: null };
   if (hit.native) {
     state.isSelecting = false;
     state.selectionCandidateEl = null;

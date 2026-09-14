@@ -21,6 +21,28 @@ export interface UniversalHit {
 }
 
 const EMPTY_HIT: UniversalHit = { element: null, native: null, video: null };
+let lastHitKey = '';
+let lastHitResult: UniversalHit = EMPTY_HIT;
+let lastHitAt = 0;
+
+function isInSubtitleBand(clientX: number, clientY: number): boolean {
+  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  for (const video of videos) {
+    const rect = video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const top = rect.top + rect.height * 0.55;
+    const bottom = rect.bottom;
+    if (
+      clientX >= rect.left - 24 &&
+      clientX <= rect.right + 24 &&
+      clientY >= top - 24 &&
+      clientY <= bottom + 24
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Thin wrapper around the detection facade so every caller gets the same
@@ -28,9 +50,29 @@ const EMPTY_HIT: UniversalHit = { element: null, native: null, video: null };
  * `getUniversalSubtitleHit`.
  */
 export function getHitAt(clientX: number, clientY: number): UniversalHit {
+  const coarseX = Math.round(clientX / 8);
+  const coarseY = Math.round(clientY / 8);
+  const key = `${coarseX}:${coarseY}`;
+  const now = performance.now();
+
+  if (key === lastHitKey && now - lastHitAt < 120) {
+    return lastHitResult;
+  }
+
+  if (!isInSubtitleBand(clientX, clientY)) {
+    lastHitKey = key;
+    lastHitAt = now;
+    lastHitResult = EMPTY_HIT;
+    return EMPTY_HIT;
+  }
+
   const hit = getUniversalSubtitleHit(clientX, clientY);
-  if (!hit.element && !hit.native && !hit.video) return EMPTY_HIT;
-  return hit;
+  const finalHit = (!hit.element && !hit.native && !hit.video) ? EMPTY_HIT : hit;
+
+  lastHitKey = key;
+  lastHitAt = now;
+  lastHitResult = finalHit;
+  return finalHit;
 }
 
 /**
