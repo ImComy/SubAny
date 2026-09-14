@@ -155,6 +155,7 @@ export function handleSelectionClick(
 
   // 1. Retrieve the clicked subtitle element.
   const clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target);
+  console.log('[SubAny] click', e.clientX, e.clientY, 'leaf:', clickedLeaf?.className, 'leafRect:', clickedLeaf ? JSON.stringify(clickedLeaf.getBoundingClientRect()) : null);
 
   if (clickedLeaf) {
     const video = getVideoForElement(clickedLeaf);

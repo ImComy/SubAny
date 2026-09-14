@@ -101,7 +101,7 @@ export function findBestSubtitleContainer(): HTMLElement | null {
       // Skip anything that isn't plausibly a caption leaf.
       if (r.width > vr.width * 0.95 && r.height > vr.height * 0.15) continue;
 const centerY = r.top + r.height / 2;
-if (centerY < vr.top + vr.height * 0.30) continue;
+if (centerY < vr.top + vr.height * 0.15) continue;
 
       const text = (el.textContent ?? '').trim();
       if (text.length < 2 || text.length > 400) continue;

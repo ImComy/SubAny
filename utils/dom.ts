@@ -231,24 +231,151 @@ export function generateUniqueSelector(element: HTMLElement): string {
   return path.length > 0 ? path.join(' > ') : 'body';
 }
 
+// ---------------------------------------------------------------------------
+// Subtitle point resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Tags that can never be a subtitle text leaf. Skipped before any geometry
+ * read to avoid wasting work and to prevent player chrome from ever matching.
+ */
 const SKIP_TAGS = new Set([
   'video', 'audio', 'canvas', 'svg', 'path',
   'button', 'input', 'select', 'textarea',
   'script', 'style', 'noscript', 'link', 'meta', 'head',
+  'iframe', 'object', 'embed', 'img', 'picture', 'source', 'track',
+  'br', 'hr', 'wbr',
 ]);
+
+function isExtensionElement(el: HTMLElement): boolean {
+  return el.id === 'subany-extension-root' || !!el.id?.startsWith('subany-');
+}
+
+function isInteractiveControl(el: HTMLElement): boolean {
+  if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) return true;
+  if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return true;
+  return false;
+}
+
+/**
+ * Locate the video element associated with a click point.
+ *
+ * Preferred path: walk up from `clickTarget` looking for a `<video>` (either
+ * the target itself or a descendant). This works when the user's click has
+ * already been captured by the player's own listeners.
+ *
+ * Fallback: hit-test the video list by rect. This works when the click target
+ * is unknown (e.g. called from a mousemove handler).
+ */
+function findVideoAtPoint(
+  clientX: number,
+  clientY: number,
+  clickTarget?: HTMLElement | null,
+): HTMLVideoElement | null {
+  if (clickTarget) {
+    let cur: HTMLElement | null = clickTarget;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (cur.tagName.toLowerCase() === 'video') {
+        return cur as HTMLVideoElement;
+      }
+      const v = cur.querySelector('video');
+      if (v) return v as HTMLVideoElement;
+      cur = cur.parentElement;
+    }
+  }
+
+  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  return (
+    videos.find((v) => {
+      const r = v.getBoundingClientRect();
+      return (
+        r.width > 0 &&
+        r.height > 0 &&
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= r.bottom
+      );
+    }) ?? null
+  );
+}
+
+/**
+ * The single validation predicate that every candidate must pass, regardless
+ * of which resolution path found it.
+ *
+ * Both the `elementsFromPoint` hit-stack and the geometric walk apply this
+ * exact rule set, so the two paths cannot disagree about what counts as a
+ * subtitle. When they diverge, one path silently returns player chrome while
+ * the other returns the caption — which is exactly the bug that motivated
+ * extracting this predicate in the first place.
+ *
+ * Rules:
+ *   - Never our own UI.
+ *   - Never a blacklisted tag (video, script, controls, etc.).
+ *   - Never an interactive control or a descendant of one.
+ *   - Must have non-zero size.
+ *   - Must not be a player wrapper: reject elements that occupy nearly the
+ *     whole video. This is what catches `.videasy-container`,
+ *     `.html5-video-player`, and similar containers whose `textContent`
+ *     happens to include the caption plus hidden control labels.
+ *   - Must be inside the video's lower portion. Very permissive (top 15% is
+ *     excluded) — enough to reject title bars, generous enough for any real
+ *     caption position.
+ *   - Must carry plausible subtitle text by length and character set.
+ */
+function isPlausibleSubtitleLeaf(el: HTMLElement, videoRect: DOMRect | null): boolean {
+  if (isExtensionElement(el)) return false;
+
+  const tag = el.tagName.toLowerCase();
+  if (SKIP_TAGS.has(tag)) return false;
+
+  if (isInteractiveControl(el)) return false;
+
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return false;
+
+  if (videoRect && videoRect.width > 0 && videoRect.height > 0) {
+    // Reject player wrappers. An element wider than 95% of the video AND
+    // taller than 15% of it is container chrome, not a caption.
+    if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) {
+      return false;
+    }
+
+    // Reject the top chrome band. centerY (not top) is used so that a
+    // caption whose top edge is high but whose text sits lower still
+    // passes — the earlier `r.top` version rejected captions anchored at
+    // bottom-40 on short players.
+    const centerY = r.top + r.height / 2;
+    if (centerY < videoRect.top + videoRect.height * 0.15) return false;
+  }
+
+  const text = (el.textContent ?? '').trim();
+  if (text.length < 2 || text.length > 400) return false;
+  if (!isSubtitleText(text)) return false;
+
+  return true;
+}
 
 /**
  * Find the subtitle element under a point, universally.
  *
- * Two paths:
- *   1. `elementsFromPoint` — fast path. Works on every site whose captions
- *      have pointer-events enabled (most sites).
- *   2. Geometric walk — fallback. Required when captions have
- *      `pointer-events: none` (YouTube, Videasy, most modern players).
+ * Two paths, one validation predicate:
  *
- * The geometric walk is scoped to `video.parentElement.parentElement` —
- * the video's grandparent. This is required because captions are almost
- * always a SIBLING of the video wrapper, not a descendant of it:
+ *   1. Hit-stack (`elementsFromPoint`). Fast, and the only path that works
+ *      when captions have `pointer-events` enabled. Skipped automatically
+ *      when captions use `pointer-events: none` — the hit stack then only
+ *      returns the video and its wrappers, all of which fail validation.
+ *
+ *   2. Geometric walk. Required for `pointer-events: none` captions
+ *      (YouTube, Videasy, most modern players). Scoped to the video's
+ *      grandparent so it reaches sibling caption layers, pruned by
+ *      containment so it only descends into subtrees that contain the
+ *      click, and bounded by MAX_VISITS so it can never explode on a
+ *      pathological page.
+ *
+ * The scope is the grandparent because captions are almost always a
+ * sibling of the video wrapper, not a descendant of it:
  *
  *     player-container              ← scope (grandparent)
  *     ├── video-wrapper
@@ -256,72 +383,30 @@ const SKIP_TAGS = new Set([
  *     └── caption-layer             ← sibling of video wrapper
  *         └── caption               ← what we want
  *
- * Scoping to `video.parentElement` (the direct parent) only works on
- * players that place captions inside the video wrapper, which is the
- * rarer layout.
- *
- * No class names. Pruned by containment. Bounded by MAX_VISITS.
+ * No class-name matching is required. No full-document scan.
  */
 export function getSubtitleElementAtPoint(
   clientX: number,
   clientY: number,
   clickTarget?: HTMLElement | null,
 ): HTMLElement | null {
-  // ---- 1. Hit-stack fast path ----
-  const stack = (document.elementsFromPoint
-    ? document.elementsFromPoint(clientX, clientY)
-    : []) as HTMLElement[];
-
-  for (const el of stack) {
-    if (!el || el === document.body || el === document.documentElement) continue;
-    if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
-    const tag = el.tagName.toLowerCase();
-    if (SKIP_TAGS.has(tag)) continue;
-    if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
-    if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
-
-    const text = (el.textContent ?? '').trim();
-    if (text.length >= 2 && text.length <= 400 && isSubtitleText(text)) {
-      return getDeepestTextContainer(el);
-    }
-  }
-
-  // ---- 2. Geometric fallback (no class names) ----
-
-  // Find the video under the click.
-  let video: HTMLVideoElement | null = null;
-
-  if (clickTarget) {
-    let cur: HTMLElement | null = clickTarget;
-    while (cur && cur !== document.body && cur !== document.documentElement) {
-      if (cur.tagName.toLowerCase() === 'video') {
-        video = cur as HTMLVideoElement;
-        break;
-      }
-      const v = cur.querySelector('video');
-      if (v) { video = v as HTMLVideoElement; break; }
-      cur = cur.parentElement;
-    }
-  }
-
-  if (!video) {
-    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
-    video =
-      videos.find((v) => {
-        const r = v.getBoundingClientRect();
-        return (
-          clientX >= r.left && clientX <= r.right &&
-          clientY >= r.top && clientY <= r.bottom
-        );
-      }) ?? null;
-  }
-
+  const video = findVideoAtPoint(clientX, clientY, clickTarget);
   if (!video) return null;
 
   const vr = video.getBoundingClientRect();
   if (vr.width <= 0 || vr.height <= 0) return null;
 
-  // Scope = grandparent. Contains both the video wrapper and the caption layer.
+  // ---- Path A: hit-stack fast path ----
+  const stack = (document.elementsFromPoint
+    ? document.elementsFromPoint(clientX, clientY)
+    : []) as HTMLElement[];
+
+  for (const el of stack) {
+    if (!isPlausibleSubtitleLeaf(el, vr)) continue;
+    return getDeepestTextContainer(el);
+  }
+
+  // ---- Path B: geometric walk ----
   const scope = video.parentElement?.parentElement ?? video.parentElement;
   if (!scope) return null;
 
@@ -335,7 +420,7 @@ export function getSubtitleElementAtPoint(
     const el = walkStack.pop()!;
     visited++;
 
-    if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
+    if (isExtensionElement(el)) continue;
 
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag)) continue;
@@ -343,28 +428,18 @@ export function getSubtitleElementAtPoint(
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
 
-    // Containment: if the click is not inside this element, skip its subtree.
+    // Prune: subtrees not containing the click are irrelevant.
     if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) {
       continue;
     }
 
-    // Push children in REVERSE so earlier siblings are popped first.
-    // This reaches overlay/caption layers before deep video subtrees.
+    // Push children in reverse so earlier siblings (typically the video
+    // wrapper and the caption layer) are popped before later chrome.
     for (let i = el.children.length - 1; i >= 0; i--) {
       walkStack.push(el.children[i] as HTMLElement);
     }
 
-    // Must be in the lower portion of the video. 0.30 is generous enough
-    // to include captions at bottom-40 on short players.
-const centerY = r.top + r.height / 2;
-if (centerY < vr.top + vr.height * 0.30) continue;
-
-    // Size cap: a caption leaf cannot be nearly the whole video.
-    if (r.width > vr.width * 0.95 && r.height > vr.height * 0.15) continue;
-
-    const text = (el.textContent ?? '').trim();
-    if (text.length < 2 || text.length > 400) continue;
-    if (!isSubtitleText(text)) continue;
+    if (!isPlausibleSubtitleLeaf(el, vr)) continue;
 
     const area = r.width * r.height;
     if (area < bestArea) {

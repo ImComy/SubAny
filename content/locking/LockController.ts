@@ -72,6 +72,7 @@ export class LockController {
     const videoForElement = getVideoForElement(element);
     const videoRect = videoForElement?.getBoundingClientRect() ?? null;
     const container = resolveStableContainer(element, videoRect);
+    console.log('[SubAny] LOCKED container:', container.className, 'rect:', JSON.stringify(container.getBoundingClientRect()));
 
     if (!isValidSelectionTarget(container, videoRect)) return;
 

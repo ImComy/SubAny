@@ -5,6 +5,7 @@ import { SubtitleOverlay } from '../../components/SubtitleOverlay';
 import { Tooltip } from '../../components/Tooltip';
 import type { ContentState } from '../state/ContentState';
 import type { ExtensionRoot } from './ExtensionRoot';
+import { getDeepestTextContainer } from '../../utils/dom';
 
 export interface ContentRendererDeps {
   /**
@@ -42,24 +43,47 @@ export class ContentRenderer {
   /**
    * Push the current state to React.
    *
-   * Matches the original `render()`:
-   *   - chooses the live container when it is renderable, otherwise falls
-   *     back to the invisible locked visual proxy so the overlay keeps
-   *     tracking the remembered anchor through a player rebuild
-   *   - passes `bilingualText` only in full-auto mode
-   *   - renders Tooltip only when `tooltipState` exists
+   * The lock points at a *stable wrapper* (survives cue changes). That wrapper
+   * often has a fixed width — on videasy it's `w-[90%]`, so 524 px regardless
+   * of the visible text. The dashed indicator must be drawn around the
+   * *visible text*, not the wrapper, or it spans the entire video width when
+   * the cue is short.
+   *
+   * So: the lock observer targets `state.activeContainerEl`, but the overlay
+   * targets `getDeepestTextContainer(state.activeContainerEl)` — the current
+   * leaf. On every cue change, the observer fires `state.notify()`, this
+   * renderer re-runs, `getDeepestTextContainer` returns the new leaf, and the
+   * box snaps to the new text bounds.
+   *
+   * `getDeepestTextContainer` descends through single-child wrappers using
+   * only `textContent` and `children` — no `innerText`, no `getComputedStyle`,
+   * no forced layout. Cost is O(depth), typically 1–4 levels. This satisfies
+   * the AGENTS.md performance contract.
+   *
+   * Fallback order:
+   *   1. Deepest text descendant of `activeContainerEl`, when renderable.
+   *   2. `activeContainerEl` itself, when the deepest leaf is temporarily
+   *      empty (a normal cue transition) but the wrapper still has size.
+   *   3. `lockedVisualProxyEl` (the invisible proxy at the remembered anchor
+   *      position) when the container is genuinely absent.
    */
   render(): void {
     const state = this.state;
     const isFullAuto = state.settings.triggerMode === 'full-auto';
 
-    const activeRect = state.activeContainerEl?.getBoundingClientRect();
-    const activeRenderable =
-      !!state.activeContainerEl &&
-      document.documentElement.contains(state.activeContainerEl) &&
+    const rectTarget = this.resolveRectTarget();
+
+    const activeRect = rectTarget?.getBoundingClientRect();
+    const renderable =
+      !!rectTarget &&
+      document.documentElement.contains(rectTarget) &&
       !!activeRect &&
       activeRect.width > 0 &&
       activeRect.height > 0;
+
+    const lockedElement = renderable
+      ? rectTarget
+      : state.lockedVisualProxyEl;
 
     const root = this.extensionRoot.getRoot();
 
@@ -69,9 +93,7 @@ export class ContentRenderer {
         null,
         React.createElement(SubtitleOverlay, {
           glowTarget: state.settings.enableGlowEffect ? state.glowTargetEl : null,
-          lockedElement: activeRenderable
-            ? state.activeContainerEl
-            : state.lockedVisualProxyEl,
+          lockedElement,
           selectionCandidate: state.selectionCandidateEl,
           isSelecting: state.isSelecting,
           hoveredWordRect: state.hoveredWordRect,
@@ -98,5 +120,40 @@ export class ContentRenderer {
           : null,
       ),
     );
+  }
+
+  /**
+   * Resolve which DOM element the overlay should position itself against.
+   *
+   * Priority:
+   *   1. The deepest text-bearing descendant of the locked container —
+   *      this is what the user actually sees as the caption.
+   *   2. The locked container itself, when the leaf is temporarily empty
+   *      (a normal cue transition) but the wrapper still has non-zero size.
+   *   3. `null` — the caller falls back to `lockedVisualProxyEl`.
+   */
+  private resolveRectTarget(): HTMLElement | null {
+    const container = this.state.activeContainerEl;
+    if (!container) return null;
+    if (!document.documentElement.contains(container)) return null;
+
+    // Descend to the current leaf. On most players this is 1–4 levels deep.
+    // Never forces layout: uses textContent and children only.
+    const leaf = getDeepestTextContainer(container);
+
+    // Prefer the leaf when it has real text.
+    const leafText = (leaf.textContent ?? '').trim();
+    if (leafText.length > 0) {
+      const r = leaf.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return leaf;
+    }
+
+    // Cue transition: leaf is momentarily empty. Use the wrapper if it still
+    // has non-zero size, so the dashed box doesn't flicker off and on between
+    // sentences.
+    const wrapperRect = container.getBoundingClientRect();
+    if (wrapperRect.width > 0 && wrapperRect.height > 0) return container;
+
+    return null;
   }
 }
