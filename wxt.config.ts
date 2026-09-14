@@ -8,7 +8,7 @@ export default defineConfig({
     name: 'SubAny',
     description: 'Translate subtitles on any video site while hovering over them.',
     version: '0.1.0',
-    permissions: ['activeTab', 'storage', 'scripting'],
+    permissions: ['activeTab', 'storage', 'scripting', 'webNavigation'],
     host_permissions: ['<all_urls>'],
   },
   vite: () => ({

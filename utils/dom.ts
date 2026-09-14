@@ -231,6 +231,12 @@ export function generateUniqueSelector(element: HTMLElement): string {
   return path.length > 0 ? path.join(' > ') : 'body';
 }
 
+const SKIP_TAGS = new Set([
+  'video', 'audio', 'canvas', 'svg', 'path',
+  'button', 'input', 'select', 'textarea',
+  'script', 'style', 'noscript', 'link', 'meta', 'head',
+]);
+
 /**
  * Find the subtitle element under a point, universally.
  *
@@ -238,8 +244,23 @@ export function generateUniqueSelector(element: HTMLElement): string {
  *   1. `elementsFromPoint` — fast path. Works on every site whose captions
  *      have pointer-events enabled (most sites).
  *   2. Geometric walk — fallback. Required when captions have
- *      `pointer-events: none` (YouTube). No class names. Pruned by
- *      containment: only descends into subtrees that contain the click.
+ *      `pointer-events: none` (YouTube, Videasy, most modern players).
+ *
+ * The geometric walk is scoped to `video.parentElement.parentElement` —
+ * the video's grandparent. This is required because captions are almost
+ * always a SIBLING of the video wrapper, not a descendant of it:
+ *
+ *     player-container              ← scope (grandparent)
+ *     ├── video-wrapper
+ *     │   └── <video>               ← video.parentElement
+ *     └── caption-layer             ← sibling of video wrapper
+ *         └── caption               ← what we want
+ *
+ * Scoping to `video.parentElement` (the direct parent) only works on
+ * players that place captions inside the video wrapper, which is the
+ * rarer layout.
+ *
+ * No class names. Pruned by containment. Bounded by MAX_VISITS.
  */
 export function getSubtitleElementAtPoint(
   clientX: number,
@@ -255,20 +276,19 @@ export function getSubtitleElementAtPoint(
     if (!el || el === document.body || el === document.documentElement) continue;
     if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
     const tag = el.tagName.toLowerCase();
-    if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) continue;
+    if (SKIP_TAGS.has(tag)) continue;
     if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
     if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) continue;
 
     const text = (el.textContent ?? '').trim();
-    if (text.length >= 1 && text.length <= 400 && isSubtitleText(text)) {
+    if (text.length >= 2 && text.length <= 400 && isSubtitleText(text)) {
       return getDeepestTextContainer(el);
     }
   }
 
   // ---- 2. Geometric fallback (no class names) ----
 
-  // Find the video under the click, either via the click target's ancestry
-  // or by rect hit-testing.
+  // Find the video under the click.
   let video: HTMLVideoElement | null = null;
 
   if (clickTarget) {
@@ -301,17 +321,15 @@ export function getSubtitleElementAtPoint(
   const vr = video.getBoundingClientRect();
   if (vr.width <= 0 || vr.height <= 0) return null;
 
-  // Scope: two levels up from the video. On YouTube this lands on
-  // `.html5-video-player`, which holds the caption layer.
+  // Scope = grandparent. Contains both the video wrapper and the caption layer.
   const scope = video.parentElement?.parentElement ?? video.parentElement;
   if (!scope) return null;
 
-  // Bounded pruned walk. Only descends into subtrees that contain the click.
   let best: HTMLElement | null = null;
   let bestArea = Infinity;
   const walkStack: HTMLElement[] = [scope];
   let visited = 0;
-  const MAX_VISITS = 500;
+  const MAX_VISITS = 800;
 
   while (walkStack.length > 0 && visited < MAX_VISITS) {
     const el = walkStack.pop()!;
@@ -319,27 +337,30 @@ export function getSubtitleElementAtPoint(
 
     if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
 
+    const tag = el.tagName.toLowerCase();
+    if (SKIP_TAGS.has(tag)) continue;
+
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
 
-    // Containment: if the click is not inside this element, skip its subtree
-    // entirely. This is the pruning that keeps the walk cheap.
+    // Containment: if the click is not inside this element, skip its subtree.
     if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) {
       continue;
     }
 
-    // Descend into children for a smaller match.
-    for (let i = 0; i < el.children.length; i++) {
+    // Push children in REVERSE so earlier siblings are popped first.
+    // This reaches overlay/caption layers before deep video subtrees.
+    for (let i = el.children.length - 1; i >= 0; i--) {
       walkStack.push(el.children[i] as HTMLElement);
     }
 
-    // Must be in the lower portion of the video (subtitles band). Allow
-    // anything below the midpoint — top-anchored captions are rare, and
-    // the click will confirm correctness anyway.
-    if (r.top < vr.top + vr.height * 0.35) continue;
+    // Must be in the lower portion of the video. 0.30 is generous enough
+    // to include captions at bottom-40 on short players.
+const centerY = r.top + r.height / 2;
+if (centerY < vr.top + vr.height * 0.30) continue;
 
-    // Size cap: a subtitle leaf cannot be nearly the whole video.
-    if (r.width > vr.width * 0.90 && r.height > vr.height * 0.15) continue;
+    // Size cap: a caption leaf cannot be nearly the whole video.
+    if (r.width > vr.width * 0.95 && r.height > vr.height * 0.15) continue;
 
     const text = (el.textContent ?? '').trim();
     if (text.length < 2 || text.length > 400) continue;

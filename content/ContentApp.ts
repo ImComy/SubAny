@@ -42,9 +42,15 @@ import type { SubtitleTrack } from './subtitles/types';
 /**
  * Top-level orchestrator for the content script.
  *
- * Owns the lifecycle and the wiring. Every concrete behaviour lives in one
- * of the collaborators below:
+ * Every frame (top and iframe) mounts a full instance. Frames without a real
+ * `<video>` will decline selection via `canOwnSelectionFrame()` when the
+ * popup broadcasts `START_SELECTION`. This is cheap (one `querySelectorAll`
+ * + a few rect reads, once per user action) and avoids the fragility of
+ * trying to detect "am I a player frame" at startup — a check that broke
+ * on players where the video is inserted before or after the content script
+ * runs, in unpredictable order.
  *
+ * Collaborators:
  *   LockController          – persistent user lock (lock / unlock)
  *   AutoDetectController    – transient auto-detection loop
  *   runTrackingTick         – shared DOM + media-event pulse
@@ -54,10 +60,6 @@ import type { SubtitleTrack } from './subtitles/types';
  *   VideoMonitor            – media event bindings
  *   ExtensionRoot/Renderer  – Shadow DOM mount + React projection
  *   events/*                – listeners with `dispose()` handles
- *
- * What remains here is genuinely cross-cutting: reacting to settings
- * changes, deciding which tracking mode should be active, and the initial
- * startup / teardown sequence.
  */
 export class ContentApp {
   private readonly state: ContentState;
@@ -174,6 +176,9 @@ export class ContentApp {
     }));
     this.handles.push(startRuntimeMessages(s, {
       onStartSelection: () => {
+        // Only the frame that actually contains a sized <video> owns
+        // selection mode. Other frames (top frame of an embedded player,
+        // unrelated iframes) decline the message.
         if (this.canOwnSelectionFrame()) startSelection(s, this.selectionDeps);
       },
       onResetSelection: () => { void this.unlockContainer(); },
@@ -218,7 +223,6 @@ export class ContentApp {
   // Public surface used by events/* callbacks
   // ---------------------------------------------------------------------
 
-  /** Shared DOM + media-event pulse. */
   private tick(): void {
     runTrackingTick({
       state: this.state,
@@ -244,10 +248,6 @@ export class ContentApp {
   // ---------------------------------------------------------------------
 
   private syncDomObserver(): void {
-    // Global DOM observation is intentionally disabled for active subtitle
-    // tracking; it is far more expensive than the lock-local observer and the
-    // periodic auto-detection pulse. Keep the hook in place for future
-    // opt-in modes, but never attach it during normal operation.
     this.domObserverHandle?.dispose();
     this.domObserverHandle = null;
   }
@@ -256,9 +256,6 @@ export class ContentApp {
     const s = this.state;
 
     try {
-      // Load both keys at once. The original asked only for `subanySettings`
-      // and then read `subanyLockedAnchor` off the result — which was never
-      // present, so the anchor was silently never restored. Fixed here.
       const stored = await browser.storage.local.get(['subanySettings', 'subanyLockedAnchor', 'subanySubtitleTrack']);
 
       if (stored?.subanySettings) {
@@ -303,9 +300,6 @@ export class ContentApp {
       this.domSwapper.restore();
     }
 
-    // Changing modes is an explicit configuration action, so allow auto
-    // detection to start again. A user pressing the overlay's unlock button
-    // does NOT change the mode and therefore remains detached.
     if (
       oldSettings.triggerMode !== s.settings.triggerMode ||
       oldSettings.replaceNativeSubtitles !== s.settings.replaceNativeSubtitles
@@ -332,13 +326,6 @@ export class ContentApp {
     this.syncDomObserver();
   }
 
-  /**
-   * Bring the active-tracking mode in line with current settings.
-   *
-   * Deliberately kept on ContentApp: it spans locking, auto-detection, and
-   * glow, so no single collaborator can own it without reaching into the
-   * others.
-   */
   private syncActiveContainer(): void {
     const s = this.state;
 
@@ -392,8 +379,15 @@ export class ContentApp {
     }
   };
 
+  /**
+   * A frame is allowed to own the selection UI if it has a genuinely sized
+   * `<video>` inside it. On cross-origin iframe players (videasy, braflix,
+   * embedded players), only the iframe passes this check — the top frame
+   * correctly declines.
+   *
+   * Runs once per START_SELECTION broadcast, not on any hot path.
+   */
   private canOwnSelectionFrame(): boolean {
-    if (this.autoDetectionElected) return true;
     const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
     return videos.some((video) => {
       const rect = video.getBoundingClientRect();

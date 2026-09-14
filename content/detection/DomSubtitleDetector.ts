@@ -1,205 +1,132 @@
 // detection/DomSubtitleDetector.ts
 
-import { getAllElements, getDeepestTextContainer } from '../../utils/dom';
-import { isSubtitleText } from '../../utils/text';
 import {
-  getSubtitlePresentationAncestor,
-  hasSubtitleClass,
-  scoreSubtitleCandidate,
-  isPlayerControlRegion,
-  type CandidateScore,
-} from './CandidateScorer';
+  getSubtitleElementAtPoint,
+  getDeepestTextContainer,
+} from '../../utils/dom';
+import { isSubtitleText } from '../../utils/text';
 import { combineSubtitleLines } from './SubtitleGrouping';
 
+/**
+ * Find the genuine subtitle element under a point.
+ *
+ * Delegates to `getSubtitleElementAtPoint`, which:
+ *   1. Tries `elementsFromPoint` (fast path — works when captions have
+ *      pointer-events enabled).
+ *   2. Falls back to a pruned geometric walk scoped to the video's
+ *      grandparent (works on YouTube, Videasy, and any player that renders
+ *      captions as a sibling of the video wrapper).
+ *
+ * The previous version of this function imposed a hard "click must be in
+ * the bottom 45% of the video" gate BEFORE running the geometric walk.
+ * That gate rejected valid captions on players where the caption sits at
+ * 45–55% y-ratio (Videasy, some embedded players, tall/short aspect ratios).
+ * It's gone. The walk itself already bounds the search to the video's
+ * subtree; no additional y-band gate is needed.
+ *
+ * No full-document scan. No `getAllElements`. No `innerText`.
+ */
+export function findGenuineSubtitleCandidate(
+  clientX: number,
+  clientY: number,
+  clickTarget?: HTMLElement | null,
+): HTMLElement | null {
+  return getSubtitleElementAtPoint(clientX, clientY, clickTarget);
+}
+
+/**
+ * Legacy alias kept for call-site compatibility. Same as above.
+ */
+export function findSubtitleByGeometry(
+  clientX: number,
+  clientY: number,
+): HTMLElement | null {
+  return getSubtitleElementAtPoint(clientX, clientY);
+}
+
+/**
+ * Best-guess initial subtitle container when there is no pointer info
+ * (used by auto-detect).
+ *
+ * For each video on the page, walk its player subtree geometrically,
+ * looking for the smallest text element inside the subtitle band. No
+ * document-wide scan; the scope is always `video.parentElement.parentElement`.
+ *
+ * Matches the same scope rule as `getSubtitleElementAtPoint`, so the two
+ * paths cannot disagree about where the caption lives.
+ */
 export function findBestSubtitleContainer(): HTMLElement | null {
-  const allElements = getAllElements(document);
-  let best: CandidateScore | null = null;
-
-  for (const el of allElements) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) continue;
-    if (el.id === 'subany-extension-root') continue;
-    const scored = scoreSubtitleCandidate(el);
-    if (scored && (!best || scored.score > best.score)) best = scored;
-  }
-
-  if (best && best.score > 5) {
-    const deepest = getDeepestTextContainer(best.element);
-    return combineSubtitleLines(deepest, null);
-  }
-
-  const live = document.querySelector('[aria-live="polite"][aria-atomic="true"]');
-  if (live && isSubtitleText(live.textContent?.trim() || '')) {
-    const liveEl = getDeepestTextContainer(live as HTMLElement);
-    return combineSubtitleLines(liveEl, null);
-  }
-  return null;
-}
-
-export function findSubtitleByGeometry(clientX: number, clientY: number): HTMLElement | null {
-  const allElements = getAllElements(document);
-  let best: CandidateScore | null = null;
-
-  for (const el of allElements) {
-    if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
-
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    if (rect.width > window.innerWidth * 0.96 && rect.height > window.innerHeight * 0.65) continue;
-
-    if (!(
-      clientX >= rect.left - 12 &&
-      clientX <= rect.right + 12 &&
-      clientY >= rect.top - 12 &&
-      clientY <= rect.bottom + 12
-    )) continue;
-
-    const scored = scoreSubtitleCandidate(el);
-    if (!scored) continue;
-
-    const video = getContainingVideo(el);
-    if (!isSubtitlePosition(el, video?.getBoundingClientRect() ?? null)) continue;
-
-    scored.score += 35;
-    scored.reasons.push('geometry-hit');
-
-    if (!best || scored.score > best.score) best = scored;
-  }
-
-  if (best && best.score > 15) {
-    const leaf = getDeepestTextContainer(best.element);
-    const containingVideo = (Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]).find((v) => {
-      const r = v.getBoundingClientRect();
-      const er = leaf.getBoundingClientRect();
-      return er.left <= r.right && er.right >= r.left && er.top <= r.bottom && er.bottom >= r.top;
-    });
-    return combineSubtitleLines(leaf, containingVideo?.getBoundingClientRect() ?? null);
-  }
-
-  return null;
-}
-
-export function findGenuineSubtitleCandidate(clientX: number, clientY: number): HTMLElement | null {
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
-  const nearestVideo = videos.find((video) => {
-    const rect = video.getBoundingClientRect();
-    const bandTop = rect.top + rect.height * 0.55;
-    const bandBottom = rect.bottom;
-    return (
-      clientX >= rect.left &&
-      clientX <= rect.right &&
-      clientY >= bandTop &&
-      clientY <= bandBottom
-    );
-  }) ?? null;
+  if (videos.length === 0) return null;
 
-  if (!nearestVideo) return null;
+  for (const video of videos) {
+    const vr = video.getBoundingClientRect();
+    if (vr.width <= 0 || vr.height <= 0) continue;
 
-  const stack = (document.elementsFromPoint ? document.elementsFromPoint(clientX, clientY) : []) as HTMLElement[];
-  const vRect = nearestVideo ? nearestVideo.getBoundingClientRect() : null;
+    const scope = video.parentElement?.parentElement ?? video.parentElement;
+    if (!scope) continue;
 
-  const validStack = stack.filter((el) => {
-    if (!el || el === document.body || el === document.documentElement) return false;
-    if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
+    let best: HTMLElement | null = null;
+    let bestArea = Infinity;
+    const walkStack: HTMLElement[] = [scope];
+    let visited = 0;
+    const MAX_VISITS = 400;
 
-    const tag = el.tagName.toLowerCase();
-    if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) return false;
-    if (el.querySelector('video') !== null) return false;
-    if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return false;
-    if (el.closest('.control, .controls, .progress, .volume, .player-controls')) return false;
+    while (walkStack.length > 0 && visited < MAX_VISITS) {
+      const el = walkStack.pop()!;
+      visited++;
 
-    const text = el.innerText?.trim() ?? '';
-    if (!text || !isSubtitleText(text)) return false;
+      if (el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) continue;
 
-    if (!isSubtitlePosition(el, vRect)) return false;
+      const tag = el.tagName.toLowerCase();
+      if (
+        tag === 'video' || tag === 'audio' || tag === 'button' ||
+        tag === 'input' || tag === 'select' || tag === 'textarea' ||
+        tag === 'svg' || tag === 'path' ||
+        tag === 'script' || tag === 'style' || tag === 'noscript'
+      ) continue;
 
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
 
-    if (vRect) {
-      if (rect.width >= vRect.width * 0.96 && rect.height >= vRect.height * 0.45) return false;
-      if (rect.height > vRect.height * 0.45) return false;
-    } else {
-      if (rect.width >= window.innerWidth * 0.95 && rect.height >= window.innerHeight * 0.45) return false;
-    }
+      // Must be inside the video bounding box.
+      if (r.left < vr.left - 20 || r.right > vr.right + 20) continue;
+      if (r.top < vr.top - 20 || r.bottom > vr.bottom + 20) continue;
 
-    return true;
-  });
+      // Push children in reverse for earlier-sibling-first DFS.
+      for (let i = el.children.length - 1; i >= 0; i--) {
+        walkStack.push(el.children[i] as HTMLElement);
+      }
 
-  if (validStack.length === 0) {
-    const geometryCandidate = findSubtitleByGeometry(clientX, clientY);
-    if (geometryCandidate) return geometryCandidate;
+      // Skip anything that isn't plausibly a caption leaf.
+      if (r.width > vr.width * 0.95 && r.height > vr.height * 0.15) continue;
+const centerY = r.top + r.height / 2;
+if (centerY < vr.top + vr.height * 0.30) continue;
 
-    if (nearestVideo && vRect) {
-      const inSubtitleZone =
-        clientX >= vRect.left &&
-        clientX <= vRect.right &&
-        clientY >= vRect.top + vRect.height * 0.55 &&
-        clientY <= vRect.bottom;
+      const text = (el.textContent ?? '').trim();
+      if (text.length < 2 || text.length > 400) continue;
+      if (!isSubtitleText(text)) continue;
 
-      if (inSubtitleZone && nearestVideo.parentElement) {
-        const playerChildren = Array.from(nearestVideo.parentElement.querySelectorAll('*')) as HTMLElement[];
-        for (const child of playerChildren) {
-          if (['video', 'audio', 'button', 'svg', 'input'].includes(child.tagName.toLowerCase())) continue;
-          if (child.querySelector('video') !== null) continue;
-          if (child.closest('button, [role="button"], [role="slider"], input')) continue;
-          const text = child.innerText?.trim() ?? '';
-          if (!text || !isSubtitleText(text)) continue;
-
-          if (!isSubtitlePosition(child, vRect)) continue;
-
-          const r = child.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0 && r.height <= vRect.height * 0.4) {
-            if (
-              clientX >= r.left - 40 && clientX <= r.right + 40 &&
-              clientY >= r.top - 40 && clientY <= r.bottom + 40
-            ) {
-              return getDeepestTextContainer(child);
-            }
-          }
-        }
+      const area = r.width * r.height;
+      if (area < bestArea) {
+        bestArea = area;
+        best = el;
       }
     }
-    return null;
+
+    if (best) {
+      return combineSubtitleLines(getDeepestTextContainer(best), vr);
+    }
   }
 
-  let best: CandidateScore | null = null;
-  for (const el of validStack) {
-    const scored = scoreSubtitleCandidate(el);
-    if (scored && (!best || scored.score > best.score)) best = scored;
+  // Aria-live fallback for players that announce captions that way.
+  const live = document.querySelector('[aria-live="polite"][aria-atomic="true"]') as HTMLElement | null;
+  if (live) {
+    const text = (live.textContent ?? '').trim();
+    if (text.length >= 2 && isSubtitleText(text)) {
+      return getDeepestTextContainer(live);
+    }
   }
 
-  if (best) {
-    const leaf = getDeepestTextContainer(best.element);
-    return combineSubtitleLines(leaf, vRect);
-  }
-
-  if (validStack[0]) return getDeepestTextContainer(validStack[0]);
   return null;
-}
-
-function getContainingVideo(element: HTMLElement): HTMLVideoElement | null {
-  const elementRect = element.getBoundingClientRect();
-  return (Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]).find((video) => {
-    const videoRect = video.getBoundingClientRect();
-    return (
-      videoRect.width > 0 &&
-      videoRect.height > 0 &&
-      elementRect.left <= videoRect.right &&
-      elementRect.right >= videoRect.left &&
-      elementRect.top <= videoRect.bottom &&
-      elementRect.bottom >= videoRect.top
-    );
-  }) ?? null;
-}
-
-function isSubtitlePosition(element: HTMLElement, videoRect: DOMRect | null): boolean {
-  if (!videoRect || videoRect.width <= 0 || videoRect.height <= 0) return true;
-
-  if (hasSubtitleClass(element) || getSubtitlePresentationAncestor(element, videoRect)) return true;
-
-  const rect = element.getBoundingClientRect();
-  const centerY = rect.top + rect.height / 2;
-  const yRatio = (centerY - videoRect.top) / videoRect.height;
-  return yRatio >= 0.55 && yRatio <= 1.02;
 }

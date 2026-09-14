@@ -9,6 +9,43 @@ import {
 import type { SubtitleSearchResult } from '../../content/subtitles';
 import './style.css';
 
+/**
+ * Send a message to every frame in a tab, not just the top frame.
+ *
+ * Required for sites where the <video> lives in a cross-origin iframe
+ * (e.g. videasy.to): `chrome.tabs.sendMessage(tabId, msg)` without a
+ * `frameId` targets only frame 0, so the iframe's content script never
+ * receives the message.
+ *
+ * Tries `chrome.webNavigation.getAllFrames` first (needs the `webNavigation`
+ * permission). If that's unavailable, falls back to sending to frameId 0
+ * through 15 and ignoring the misses — cheap and permission-free.
+ */
+async function sendToAllFrames(tabId: number, message: { type: string }): Promise<void> {
+  try {
+    const wnav = (browser as unknown as { webNavigation?: { getAllFrames?: (q: { tabId: number }) => Promise<Array<{ frameId: number }>> } }).webNavigation;
+    if (wnav?.getAllFrames) {
+      const frames = await wnav.getAllFrames({ tabId });
+      if (Array.isArray(frames) && frames.length > 0) {
+        await Promise.all(
+          frames.map((f) =>
+            browser.tabs.sendMessage(tabId, message, { frameId: f.frameId }).catch(() => {}),
+          ),
+        );
+        return;
+      }
+    }
+  } catch {
+    // webNavigation not granted or API error — fall through to range send.
+  }
+
+  const sends: Promise<unknown>[] = [];
+  for (let frameId = 0; frameId < 16; frameId++) {
+    sends.push(browser.tabs.sendMessage(tabId, message, { frameId }).catch(() => {}));
+  }
+  await Promise.all(sends);
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'translate' | 'subtitles' | 'settings'>('translate');
   const [settings, setSettings] = useState<ExtensionSettings>(DEFAULT_SETTINGS);
@@ -42,11 +79,25 @@ export default function App() {
     try {
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
       if (tab?.id) {
-        const res = (await browser.tabs.sendMessage(tab.id, { type: 'GET_STATUS' })) as any;
+        // Status can come from any frame — try top first, then broadcast.
+        let res: { hasLockedContainer?: boolean; selector?: string | null } | undefined;
+        try {
+          res = (await browser.tabs.sendMessage(tab.id, { type: 'GET_STATUS' })) as typeof res;
+        } catch {
+          // Top frame didn't answer — try all frames and take the first reply.
+          const framesRes = await Promise.all(
+            Array.from({ length: 16 }, (_, frameId) =>
+              browser.tabs
+                .sendMessage(tab.id!, { type: 'GET_STATUS' }, { frameId })
+                .catch(() => undefined),
+            ),
+          );
+          res = framesRes.find((r) => r && typeof r === 'object') as typeof res;
+        }
         if (res) {
           setTabContainerStatus({
-            hasLockedContainer: res.hasLockedContainer,
-            selector: res.selector,
+            hasLockedContainer: !!res.hasLockedContainer,
+            selector: res.selector ?? null,
           });
         }
       }
@@ -74,17 +125,20 @@ export default function App() {
 
   const handleStartSelection = async () => {
     setIsSelecting(true);
-    setStatusMessage('Selection mode activated! Click your video tab.');
+    setStatusMessage('Selection mode activated! Click a subtitle in the video.');
     try {
-      // Broadcast to all frames (including cross-origin video iframes) via storage
-      await browser.storage.local.set({ subanyAction: { type: 'START_SELECTION', t: Date.now() } });
-
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id) {
-        try {
-          await browser.tabs.sendMessage(tab.id, { type: 'START_SELECTION' });
-        } catch (_) { /* may already be handled via storage */ }
-      }
+      if (!tab?.id) throw new Error('No active tab');
+
+      // Primary path: explicit per-frame message. Required for cross-origin
+      // iframe players (videasy.to, embedded players, etc.).
+      await sendToAllFrames(tab.id, { type: 'START_SELECTION' });
+
+      // Redundant broadcast via storage. Some frames may not be reachable
+      // through tabs.sendMessage if their listener is added after our send.
+      await browser.storage.local.set({
+        subanyAction: { type: 'START_SELECTION', t: Date.now() },
+      });
 
       setTimeout(() => {
         window.close();
@@ -97,13 +151,13 @@ export default function App() {
 
   const handleResetContainer = async () => {
     try {
-      await browser.storage.local.set({ subanyAction: { type: 'RESET_SELECTION', t: Date.now() } });
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
       if (tab?.id) {
-        try {
-          await browser.tabs.sendMessage(tab.id, { type: 'RESET_SELECTION' });
-        } catch (_) { /* ignore */ }
+        await sendToAllFrames(tab.id, { type: 'RESET_SELECTION' });
       }
+      await browser.storage.local.set({
+        subanyAction: { type: 'RESET_SELECTION', t: Date.now() },
+      });
       await updateSetting('lockedSelector', null);
       setTabContainerStatus({ hasLockedContainer: false, selector: null });
       setStatusMessage('Subtitle container unlocked.');
