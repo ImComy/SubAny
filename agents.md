@@ -176,7 +176,44 @@ violation was a multi-day debugging session. Do not repeat them.
 
 When you fix a bug, add a case file. When you encounter an edge case that
 isn't yet documented, add a case file. When you make an architectural
-change that invalidates a case file, update it.
+change that invalidates a case file, update it. When you try to fix a bug
+and fail, add the attempt to the case file — **do not create a new one.**
+
+### One case per bug, not per attempt
+
+The most common documentation failure in this project has been treating
+each fix attempt as its own case. A bug was reported, a plausible-sounding
+theory was formed, code was changed, and a case file was written with
+**Status: Fixed**. When that attempt turned out to be wrong, a second case
+file was written for the next attempt. When that one was wrong too, a
+third case file appeared. By the time the actual fix landed, the case
+directory contained three files for one bug: two of them labelled
+unrelated code as `Fixed`, and one of them referencing code that had since
+been deleted.
+
+**Rule.** One case file per bug. Every attempt to fix that bug goes in
+the `Fix attempts` section of the same case file, in chronological order,
+with an explicit success or failure marker.
+
+**Exception.** If an attempt exposes an *independent* bug — something with
+its own symptom, root cause, and reproduction, that would exist even if
+the original bug were never reported — that independent bug gets its own
+case file. Otherwise the attempt stays folded into the parent case.
+
+### What counts as a "major" attempt
+
+An attempt belongs in the `Fix attempts` section if it meets **any** of:
+
+- It changed a hypothesis about the root cause.
+- It changed the code path that handles the bug, not just a constant or a
+  log line.
+- It took more than 30 minutes to design, implement, or test.
+
+Cosmetic tweaks (adding a log, fixing a typo, adjusting a threshold within
+the same design, renaming a variable) do not belong. If you are unsure,
+ask: *"Would a future maintainer benefit from knowing I tried this and
+it didn't work?"* If yes, include it. If it is just noise between the
+real attempts, leave it out.
 
 ### Where docs live
 
@@ -189,36 +226,101 @@ change that invalidates a case file, update it.
 Every case file has this structure. Do not skip sections:
 
 1. **Symptom** — what the user sees. Observable behaviour, not diagnosis.
+
 2. **Root cause** — the actual mechanism. Function names, line numbers if
-   useful.
-3. **Fix** — the exact change. Include a code snippet if it clarifies.
+   useful. Write this in past tense from the perspective of what is now
+   known, even if the root cause was not identified until the working
+   attempt.
+
+3. **Fix attempts (chronological)** — every major attempt, in the order it
+   was made. Each entry has:
+
+   - **Hypothesis** — what the attempt believed was wrong.
+   - **Change** — the code or architectural change that was made. Include
+     a code snippet only if it clarifies the attempt.
+   - **Result** — `✅ Worked`, `❌ Failed`, or `⚠️ Partial`. If it failed,
+     state *why* it failed, not just *that* it failed.
+   - **Why it looked plausible** — (failed and partial attempts only) the
+     reasoning that made the attempt look correct at the time. This is
+     the section that prevents the same trap from being re-entered. If
+     the failure was obvious in hindsight, say so; if it was subtle,
+     explain the thing that made it look right.
+
+   The last entry is the working fix. A case can only be marked `Fixed`
+   when the last entry has `✅ Worked`.
+
 4. **Why this is general** — the reason the fix applies beyond the one site
    it was found on. If it's a one-off, say so.
+
 5. **Invariant** — one sentence. A rule that, if kept, would have prevented
    the bug.
+
 6. **Regression test** — how to confirm the fix works, precisely enough
    that a stranger can reproduce it.
 
-### When to add a case file
+### Status values
 
+Every case has exactly one of these. Update it as the state of the case
+changes:
+
+- **`Fixed`** — root cause identified, working fix present in the code,
+  and the regression test has been run against the current build at least
+  once.
+- **`Mitigated`** — partial fix. The symptom is reduced but the case is
+  still observable in some conditions. The residual is described in the
+  case body.
+- **`In progress`** — actively being worked on. One or more failed attempts
+  are present in the `Fix attempts` section. Use this while a case is
+  moving.
+- **`Open`** — known limitation, not actively being worked on. A file in
+  this state describes the bug clearly but may not have any fix attempts
+  yet.
+- **`Won't fix`** — acknowledged, deliberately not fixing. The case body
+  must state why.
+
+### When to add a case file, and when not to
+
+**Add a case file for:**
 - Any bug that took more than 30 minutes to diagnose.
 - Any bug whose root cause was non-obvious.
 - Any edge case that shows a gap in the geometric detection model.
 - Any performance regression.
 - Any change to the "Absolute Invariants" list above.
 
-### When NOT to add a case file
-
+**Do not add a case file for:**
 - Trivial typos, missing imports, etc.
-- One-off player quirks that don't generalise — but note those in
+- One-off player quirks that don't generalise — instead, note those in
   `docs/ENGINE.md` under a "Known limitations" section.
+- A failed fix attempt — add it to the existing case file for the bug it
+  was trying to fix.
+
+### Misfiled cases
+
+If a case file turns out to have been a fix attempt mislabelled as its own
+case — for example, an attempt that was marked `Fixed` but whose code is
+no longer in the tree, and whose change was actually a step on the way to
+a different case's working fix — **fold it into the parent case and
+retire the number.**
+
+- Add the attempt to the parent case's `Fix attempts` section, in its
+  original chronological position, with the `❌ Failed` marker and a
+  `Why it looked plausible` subsection.
+- Delete the misfiled file.
+- Update the index in `docs/cases/README.md` to remove the deleted row.
+- Do not reuse the retired number.
+
+Retiring a number is a deliberate act. It says: *"this was not a bug, it
+was a mistake in the diagnostic process, and keeping it as a case file
+would misrepresent the tree."* This is the only circumstance in which a
+case number disappears.
 
 ### Numbering
 
 Files are numbered sequentially: `NNN-title-in-kebab-case.md`. Take the
 next available number. Do not renumber existing files even if they become
 obsolete. Deleting a case file would hide the fact that the problem
-existed at all.
+existed at all — with the single exception described under **Misfiled
+cases** above.
 
 ### Adding a new invariant
 
@@ -273,6 +375,8 @@ Answer these:
       `isPlausibleSubtitleLeaf` predicate?
 - [ ] If I fixed a bug that took more than 30 minutes to diagnose, did I
       add a case file?
+- [ ] If I made a failed fix attempt, did I add it to the existing case
+      file rather than creating a new one?
 
 If the answer to any of the first five is yes, revert and try again.
 
