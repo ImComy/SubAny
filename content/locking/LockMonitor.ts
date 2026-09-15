@@ -20,31 +20,85 @@ const CONTROL_SELECTOR =
   'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]';
 
 /**
- * After the current active container stops being plausible, wait this long
- * before running another recovery scan. A player rebuild can fire dozens of
- * mutations in a single frame; without this every one of them would try to
- * scan. 150 ms is enough to coalesce a rebuild burst but short enough that
- * a fresh cue is picked up immediately.
+ * Cooldown for the expensive recovery scan. The cheap selector
+ * re-resolution path is not rate-limited — see the observer callback.
  */
-const SCAN_COOLDOWN_MS = 150;
+const SCAN_COOLDOWN_MS = 80;
+
+/**
+ * Maximum horizontal slack, in pixels, between a child's rendered rect and
+ * its parent's rendered rect before we conclude the parent is a layout-only
+ * wrapper (a block element that fills its parent's width regardless of
+ * content) rather than part of the caption itself.
+ *
+ * A tight caption leaf — an inline span whose box hugs its glyphs — is the
+ * target. The first block-level ancestor will exceed it by hundreds of
+ * pixels on a centered caption. Inline wrappers with padding will exceed it
+ * by at most a few pixels. This constant is the boundary between those two
+ * cases.
+ */
+const MAX_WRAPPER_SLACK_PX = 40;
 
 // ---------------------------------------------------------------------------
 // Module-scope runtime state (per content-script instance)
 // ---------------------------------------------------------------------------
 
-/**
- * The last text we forwarded to the translation pipeline. Used to avoid
- * spurious `state.notify()` calls when the mutation observer fires on a
- * subtree that contains the caption but whose text hasn't changed. Reset
- * whenever the monitor is stopped or restarted.
- */
 let lastNotifiedText = '';
+let lastScanAt = 0;
+let positionRafId = 0;
+let lastPositionKey = '';
+
+// ---------------------------------------------------------------------------
+// Geometry helpers
+// ---------------------------------------------------------------------------
 
 /**
- * Timestamp of the last recovery scan. Rate-limits scans across mutation
- * bursts.
+ * Union of the on-screen glyph bounds of every caption text node inside
+ * `root`, excluding text inside interactive controls and the extension's
+ * own overlay.
+ *
+ * Uses a Range over individual TEXT NODES, never over an element.
+ * `Range.selectNodeContents(blockElement)` can return the block's line-box
+ * (full container width) even when the visible glyphs occupy only a small
+ * centered span. A Range over a text node always returns the actual
+ * rendered run.
  */
-let lastScanAt = 0;
+function textBounds(root: Element): DOMRect | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const text = node.nodeValue ?? '';
+      if (!text.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = (node as Text).parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest(CONTROL_SELECTOR)) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('#subany-extension-root')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let l = Infinity;
+  let t = Infinity;
+  let r = -Infinity;
+  let b = -Infinity;
+  let found = false;
+
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    for (const rr of Array.from(range.getClientRects())) {
+      if (rr.width <= 0 && rr.height <= 0) continue;
+      if (rr.left < l) l = rr.left;
+      if (rr.top < t) t = rr.top;
+      if (rr.right > r) r = rr.right;
+      if (rr.bottom > b) b = rr.bottom;
+      found = true;
+    }
+  }
+
+  if (!found) return null;
+  return new DOMRect(l, t, r - l, b - t);
+}
 
 // ---------------------------------------------------------------------------
 // Predicates
@@ -54,13 +108,6 @@ function isExtensionElement(el: HTMLElement): boolean {
   return el.id === 'subany-extension-root' || !!el.id?.startsWith('subany-');
 }
 
-/**
- * True when the element (or any descendant) is an interactive control.
- *
- * This is the guard that stops the lock from silently attaching to player
- * chrome whose `textContent` happens to be a run of letters — settings
- * panels, control bars, playback menus. A caption never contains a button.
- */
 function containsInteractiveControls(el: HTMLElement): boolean {
   return el.querySelector(CONTROL_SELECTOR) !== null;
 }
@@ -71,38 +118,40 @@ function containsInteractiveControls(el: HTMLElement): boolean {
  * many players the caption wrapper sits empty between cues and fills in
  * again when the next one starts.
  *
- * Every check is cheap: one `querySelector` and one `getBoundingClientRect`.
- * `textContent` is read last because we only need it once the geometric
- * checks have passed.
+ * Disqualifiers, in ascending cost:
+ *   1. Detached from the document, or is one of our own overlay nodes.
+ *   2. Contains an interactive control (button, slider, contenteditable).
+ *   3. Has zero area.
+ *   4. Text is too long, or doesn't look like a subtitle.
+ *   5. Layout box is materially wider than its rendered text — this is a
+ *      block-level wrapper that fills its parent by layout, not by content.
+ *
+ * Check #5 is the one that keeps the dashed border tight on players that
+ * wrap a small centered caption in a full-width block.
  */
 function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
   if (!el) return false;
   if (!document.documentElement.contains(el)) return false;
-
-  // Chrome check first — cheap, and it eliminates the most common wrong
-  // target (settings panel, control bar) in one shot.
+  if (isExtensionElement(el)) return false;
   if (containsInteractiveControls(el)) return false;
 
   const rect = el.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
 
-  // Reject thin-wide strips (progress bars, scrubbers). No subtitle line
-  // is ever shaped like a progress bar.
-  if (rect.width / rect.height > 20) return false;
-
-  // Text check: empty is fine (between cues). If there is text, it must
-  // look like a subtitle, not a timecode or player label.
   const text = normalizeSubtitleText(el.textContent ?? '');
-  if (text.length === 0) return true;
+  if (text.length === 0) return true; // between cues
   if (text.length > 400) return false;
-  return isSubtitleText(text);
+  if (!isSubtitleText(text)) return false;
+
+  const tb = textBounds(el);
+  if (tb && rect.width - tb.width > MAX_WRAPPER_SLACK_PX) return false;
+
+  return true;
 }
 
 /**
  * A stricter check used only during the recovery scan. The scan is looking
  * for a caption that is *currently visible*, so empty text disqualifies.
- * Position and size are also checked here because the scan may encounter
- * candidates anywhere in the player subtree.
  */
 function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
   if (isExtensionElement(el)) return false;
@@ -116,18 +165,21 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
   // Reject player wrappers.
   if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) return false;
 
-  // Reject thin-wide chrome.
-  if (r.width / r.height > 20) return false;
-
-  // Reject the top chrome band. `centerY`, not `top`, so captions whose
-  // top edge is high but whose text sits lower still pass.
+  // Reject the top chrome band. `centerY`, not `top`, so captions whose top
+  // edge is high but whose text sits lower still pass.
   const centerY = r.top + r.height / 2;
   if (centerY < videoRect.top + videoRect.height * 0.15) return false;
 
   // Must contain plausible subtitle text.
   const text = normalizeSubtitleText(el.textContent ?? '');
   if (text.length < 2 || text.length > 400) return false;
-  return isSubtitleText(text);
+  if (!isSubtitleText(text)) return false;
+
+  // Reject full-width block wrappers that only *contain* the caption.
+  const tb = textBounds(el);
+  if (tb && r.width - tb.width > MAX_WRAPPER_SLACK_PX) return false;
+
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,54 +187,62 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Walk up from a clicked subtitle leaf to the stable caption container.
+ * Walk up from a clicked subtitle leaf to the tightest element that still
+ * contains only the caption.
  *
- * Purely geometric. Class matching is a preference — if nothing matches,
- * the highest surviving ancestor is still the correct answer.
+ * The invariant: a caption leaf is an inline element whose box hugs its
+ * glyphs. The first ancestor that is materially wider than the element we
+ * are currently on (by more than MAX_WRAPPER_SLACK_PX) is a block-level
+ * wrapper — it fills its parent by layout, not by content — and must not
+ * be used as the visual target, because its `getBoundingClientRect()` will
+ * return the wrapper width, not the caption width.
+ *
+ * This is the difference between `width: 130px` (correct) and
+ * `width: 556px` (the wrapper).
  */
 export function resolveStableContainer(
   clickedElement: HTMLElement,
   videoRect: DOMRect | null,
 ): HTMLElement {
-  let current: HTMLElement | null = clickedElement;
-  let bestContainer: HTMLElement = clickedElement;
-  let highestStable: HTMLElement = clickedElement;
-  const controlSelector = 'video, button, input, [role="button"], [role="slider"]';
+  let current: HTMLElement = clickedElement;
+  let best: HTMLElement = clickedElement;
 
-  for (
-    let i = 0;
-    i < 6 && current && current !== document.body && current !== document.documentElement;
-    i++
-  ) {
-    if (current.tagName.toLowerCase() === 'video') break;
-    if (current.classList.contains('html5-video-player') || current.classList.contains('video-stream')) break;
-    if (current.matches(controlSelector) || !!current.querySelector(controlSelector)) break;
+  for (let i = 0; i < 6; i++) {
+    const parent = current.parentElement;
+    if (!parent) break;
+    if (parent === document.body || parent === document.documentElement) break;
+    if (parent.tagName.toLowerCase() === 'video') break;
+    if (parent.classList.contains('html5-video-player') || parent.classList.contains('video-stream')) break;
+    if (parent.matches('video, button, input, [role="button"], [role="slider"]')) break;
+    if (containsInteractiveControls(parent)) break;
 
-    const rect = current.getBoundingClientRect();
-    if (videoRect) {
-      if (rect.width > videoRect.width * 0.90 && rect.height > videoRect.height * 0.15) break;
-      if (rect.width > videoRect.width * 0.98) break;
-      if (rect.height > Math.min(videoRect.height * 0.35, 300)) break;
-    }
-
-    const className = typeof current.className === 'string' ? current.className : '';
-
+    // Explicit caption-window class: trust it even if it is wide. This is
+    // the player telling us "this element is the caption surface", which
+    // overrides the geometric heuristic.
+    const className = typeof parent.className === 'string' ? parent.className : '';
     const isExplicitCaptionWindow =
       /(caption-window|ytp-caption-window|subtitle-window|captions-display|cue-container)/i.test(className) &&
       !className.includes('caption-window-container');
-    if (isExplicitCaptionWindow) {
-      return current;
+    if (isExplicitCaptionWindow) return parent;
+
+    const parentRect = parent.getBoundingClientRect();
+    const currentRect = current.getBoundingClientRect();
+
+    // The decisive test. Stop the moment the ancestor is materially wider
+    // than the element we are on. This is what keeps the dashed border
+    // tight on players that wrap a centered caption in a full-width block.
+    if (parentRect.width - currentRect.width > MAX_WRAPPER_SLACK_PX) break;
+
+    if (videoRect) {
+      if (parentRect.width > videoRect.width * 0.98) break;
+      if (parentRect.width > videoRect.width * 0.90 && parentRect.height > videoRect.height * 0.15) break;
     }
 
-    if (/(caption|subtitle|cue|timedtext)/i.test(className) && !className.startsWith('subany-')) {
-      bestContainer = current;
-    }
-
-    highestStable = current;
-    current = current.parentElement;
+    best = parent;
+    current = parent;
   }
 
-  return bestContainer !== clickedElement ? bestContainer : highestStable;
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +283,8 @@ function findObservedVideo(state: ContentState): HTMLVideoElement | null {
  * whose text already looks like a subtitle.
  *
  * This is the ONLY place that walks more than the current container. It
- * runs at most once per SCAN_COOLDOWN_MS, and only when the fast-path
- * check has already failed.
+ * runs at most once per SCAN_COOLDOWN_MS, and only when the cheap selector
+ * re-resolution has already failed.
  */
 function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
   const vr = video.getBoundingClientRect();
@@ -274,35 +334,50 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
 }
 
 // ---------------------------------------------------------------------------
+// Cheap selector re-resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to re-resolve the stored selector to a live, plausible container.
+ *
+ * This is cheap — one `querySelector` plus one rect read — so it is safe to
+ * run on every mutation, without any cooldown. Players frequently replace
+ * the caption node per cue (rather than mutating its text in place), and
+ * when they do, this recovers the container within the same mutation
+ * delivery, so even very short cues are tracked for their full duration.
+ */
+function tryResolveFromSelector(state: ContentState): HTMLElement | null {
+  const selector = state.settings.lockedSelector;
+  if (!selector) return null;
+
+  let el: HTMLElement | null = null;
+  try {
+    el = document.querySelector(selector) as HTMLElement | null;
+  } catch (_) {
+    return null;
+  }
+
+  if (!el) return null;
+  if (!isPlausibleCaptionContainer(el)) return null;
+  return el;
+}
+
+// ---------------------------------------------------------------------------
 // Fast-path / fallback orchestration
 // ---------------------------------------------------------------------------
 
 /**
  * One repair pass. Tries the current container first, then the stored
- * selector, then a bounded scan of the video subtree. Returns the element
- * to use as `activeContainerEl`, or null if nothing valid was found.
- *
- * Rate-limited by the caller, not by itself — the observer applies the
- * cooldown.
+ * selector, then a bounded scan of the video subtree.
  */
 function recoverCaption(state: ContentState): HTMLElement | null {
-  // 1. Current container if it's still plausible.
   if (isPlausibleCaptionContainer(state.activeContainerEl)) {
     return state.activeContainerEl;
   }
 
-  // 2. Stored selector, if it resolves to something plausible.
-  const selector = state.settings.lockedSelector;
-  if (selector) {
-    try {
-      const el = document.querySelector(selector) as HTMLElement | null;
-      if (isPlausibleCaptionContainer(el)) return el;
-    } catch (_) {
-      // Invalid selector syntax.
-    }
-  }
+  const fromSelector = tryResolveFromSelector(state);
+  if (fromSelector) return fromSelector;
 
-  // 3. Bounded scan of the video subtree for a live caption.
   const video = findObservedVideo(state);
   if (video) {
     const caption = findCaptionInVideo(video);
@@ -313,14 +388,69 @@ function recoverCaption(state: ContentState): HTMLElement | null {
 }
 
 // ---------------------------------------------------------------------------
+// Position tracking (RAF)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bounded requestAnimationFrame loop while locked.
+ *
+ * Purpose: some players move the caption with `transform`, `top`, or
+ * `left` during a control-bar fade. None of those produce a DOM mutation
+ * (nothing to observe), nor a `ResizeObserver` entry (the size does not
+ * change), nor a `scroll` event. The only reliable primitive is a per-frame
+ * rect read while the lock is active.
+ *
+ * Cost: one `getBoundingClientRect()` and one string compare per frame —
+ * well under 0.01 ms. `notify()` is only called when the rect actually
+ * changed, so the React tree re-renders only during a real move.
+ *
+ * `requestAnimationFrame` is paused automatically when the tab is hidden,
+ * so there is no cost for background tabs.
+ */
+function startPositionTracking(state: ContentState): void {
+  stopPositionTracking();
+  lastPositionKey = '';
+
+  const tick = (): void => {
+    const el = state.activeContainerEl;
+    if (!el) {
+      positionRafId = 0;
+      return;
+    }
+
+    const r = el.getBoundingClientRect();
+    const key =
+      `${r.left.toFixed(1)}:${r.top.toFixed(1)}:` +
+      `${r.width.toFixed(1)}:${r.height.toFixed(1)}`;
+
+    if (key !== lastPositionKey) {
+      lastPositionKey = key;
+      state.notify();
+    }
+
+    positionRafId = requestAnimationFrame(tick);
+  };
+
+  positionRafId = requestAnimationFrame(tick);
+}
+
+function stopPositionTracking(): void {
+  if (positionRafId) {
+    cancelAnimationFrame(positionRafId);
+    positionRafId = 0;
+  }
+  lastPositionKey = '';
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
  * One-shot repair. Called by the app on lifecycle events (resize, settings
  * change). The observer does the steady-state work; this function exists
- * for the cases where the app knows a change just happened and doesn't
- * want to wait for the next mutation.
+ * for cases where the app knows a change just happened and doesn't want to
+ * wait for the next mutation.
  */
 export function maintainLockedContainer(
   state: ContentState,
@@ -339,35 +469,48 @@ export function maintainLockedContainer(
 }
 
 /**
- * Stop observing. Called on unlock, on mode change, and internally when
- * the container is cleared.
+ * Stop observing. Called on unlock, on mode change, and internally when the
+ * container is cleared.
  */
 export function stopLockedMonitor(state: ContentState): void {
   state.lockedContainerObserver?.disconnect();
   state.lockedContainerObserver = null;
+
+  // These two are no longer attached by this module (RAF replaced them),
+  // but they are still cleared defensively in case an older instance of
+  // the extension left them set on the state object.
+  state.lockedPositionObserver?.disconnect();
+  state.lockedPositionObserver = null;
+  state.lockedPositionEventTarget = null;
+  state.lockedPositionEventHandler = null;
+
+  state.lastLockedRect = null;
   lastNotifiedText = '';
+  lastScanAt = 0;
+  stopPositionTracking();
 }
 
 /**
- * Attach a MutationObserver to the video's player subtree.
+ * Attach a MutationObserver to the video's player subtree, and start the
+ * RAF position tracker.
  *
- * Scope is `video.parentElement.parentElement` — the same scope the
- * geometric walk uses. It reaches captions that live as siblings of the
- * video wrapper (most modern players) as well as captions that live
- * inside it (older players).
- *
- * The observer does two jobs on every mutation:
+ * The observer does three jobs on every mutation batch, in ascending cost:
  *
  *   1. Fast-path validation. If the current container is still plausible,
- *      nothing else happens. This is the common case during normal
- *      playback and it costs one `querySelector` + one rect read.
+ *      nothing else happens. Common case during steady playback, costs one
+ *      `querySelector` and one rect read.
  *
- *   2. Recovery. If the fast path fails, one bounded scan runs (rate-
- *      limited to SCAN_COOLDOWN_MS). The scan either finds the new caption
- *      (cue transition) or returns nothing (silence, ad, teardown). In the
- *      latter case the container is cleared and the box hides.
+ *   2. Cheap selector re-resolution. If the current container is gone,
+ *      re-resolve the stored selector. Players frequently recreate the
+ *      caption node per cue; this recovers the container without any
+ *      cooldown, so even very short cues are picked up immediately.
  *
- * There is no timer. Every trigger comes from the page itself.
+ *   3. Expensive recovery scan. Only if steps 1 and 2 both fail. Bounded
+ *      walk of the player subtree, rate-limited to SCAN_COOLDOWN_MS to
+ *      coalesce player-rebuild bursts.
+ *
+ * Position tracking (transform, control-bar slide) is handled separately
+ * by the RAF loop, because none of those motions produce a mutation.
  */
 export function startLockedMonitor(
   state: ContentState,
@@ -378,23 +521,32 @@ export function startLockedMonitor(
   const video = findObservedVideo(state);
   if (!video) return;
 
-  // The observer scope. Contains both the video wrapper and — on players
-  // where captions live in a sibling layer — the caption layer.
   const scope = video.parentElement?.parentElement ?? video.parentElement;
   if (!scope) return;
 
   const observer = new MutationObserver(() => {
-    // ---- Fast path: is the current container still valid? ----
+    // ---- Step 1: is the current container still valid? ----
     let active = state.activeContainerEl;
 
     if (!isPlausibleCaptionContainer(active)) {
-      // ---- Recovery: bounded, rate-limited scan. ----
-      const now = performance.now();
-      if (now - lastScanAt < SCAN_COOLDOWN_MS) return;
-      lastScanAt = now;
+      // ---- Step 2: cheap selector re-resolution (no cooldown). ----
+      const fromSelector = tryResolveFromSelector(state);
+      if (fromSelector) {
+        active = fromSelector;
+        state.activeContainerEl = fromSelector;
+        // Reset the cooldown budget: we just proved the DOM is in a
+        // healthy state, so a subsequent burst should not be blocked by
+        // a stale timestamp from before this recovery.
+        lastScanAt = performance.now();
+      } else {
+        // ---- Step 3: expensive recovery, rate-limited. ----
+        const now = performance.now();
+        if (now - lastScanAt < SCAN_COOLDOWN_MS) return;
+        lastScanAt = now;
 
-      active = recoverCaption(state);
-      state.activeContainerEl = active;
+        active = recoverCaption(state);
+        state.activeContainerEl = active;
+      }
     }
 
     if (!active) {
@@ -411,7 +563,6 @@ export function startLockedMonitor(
 
     // ---- Text change detection ----
     const text = normalizeSubtitleText(active.textContent ?? '');
-
     if (text === lastNotifiedText) return;
     lastNotifiedText = text;
 
@@ -427,8 +578,8 @@ export function startLockedMonitor(
     }
 
     // Real cue. Reposition the box immediately, then hand off to the
-    // translation pipeline (which is a no-op in hover/click modes and
-    // produces a translation in full-auto / replace-native modes).
+    // translation pipeline (no-op in hover/click modes, translation in
+    // full-auto / replace-native modes).
     state.notify();
     if (onTextChange) onTextChange(text);
   });
@@ -440,11 +591,15 @@ export function startLockedMonitor(
   });
 
   state.lockedContainerObserver = observer;
+
+  // Follow position-only motion (transform, control-bar slide, scroll,
+  // video resize) with a single bounded RAF loop.
+  startPositionTracking(state);
 }
 
 /**
  * Used by the app on settings change and lifecycle events. Delegates to
- * `maintainLockedContainer`, which is now a one-shot repair.
+ * `maintainLockedContainer`, which is a one-shot repair.
  */
 export function reattachLockedContainer(
   state: ContentState,

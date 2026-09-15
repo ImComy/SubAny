@@ -130,7 +130,7 @@ export class AutoDetectController {
     const bestVideoRect = best.video?.getBoundingClientRect() ?? null;
     if (
       isPlayerControlRegion(element, bestVideoRect) ||
-      isPlaybackTimeText(element.innerText || element.textContent || '')
+      isPlaybackTimeText(element.textContent || '')
     ) {
       this.discardTrack(best.key, now);
       return;
@@ -152,7 +152,7 @@ export class AutoDetectController {
       s.notify();
     }
 
-    const currentText = normalizeSubtitleText(element.innerText || element.textContent || '');
+    const currentText = normalizeSubtitleText(element.textContent || '');
     if (currentText && currentText !== s.lastObservedSubtitleText) {
       void handleSubtitleTextChange(s, this.translation, currentText);
     }

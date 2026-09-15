@@ -48,7 +48,7 @@ function getCaretInfo(x: number, y: number): { node: Text; offset: number } | nu
   for (const el of stack) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'video' || tag === 'body' || tag === 'html') break;
-    const text = el.innerText?.trim() ?? '';
+    const text = (el.textContent ?? '').trim();
     // If element has no text, or is a root extension overlay, or is a wrapper div with pointer-events
     if (!text || el.id === 'subany-extension-root' || el.id === 'subany-pin-overlay') {
       disabledList.push({ el, prev: el.style.pointerEvents });
@@ -186,7 +186,7 @@ export class TextExtractor {
       }
     }
 
-    const fullContainerText = container.innerText?.trim() ?? '';
+    const fullContainerText = (container.textContent ?? '').trim();
     if (fullContainerText) {
       return {
         text: fullContainerText,

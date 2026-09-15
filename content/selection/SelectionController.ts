@@ -40,15 +40,100 @@ function isPointerOverAnyVideo(clientX: number, clientY: number, padding = 8): b
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Geometric fallback for click resolution
+// ---------------------------------------------------------------------------
+
+const CONTROL_SELECTOR =
+  'button, a, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]';
+
+const SKIP_TAGS = new Set([
+  'video', 'audio', 'canvas', 'svg', 'button', 'input', 'select',
+  'script', 'style', 'noscript', 'head', 'meta', 'link', 'iframe',
+  'object', 'embed', 'img', 'picture', 'source', 'track',
+  'br', 'hr', 'wbr',
+]);
+
 /**
- * Lifecycle callbacks the selection layer needs to talk back to the app.
- * Everything outside the selection state machine is injected so this folder
- * stays a leaf module.
+ * Locate the smallest caption-like element containing the point.
+ *
+ * Used as a fallback when `getSubtitleElementAtPoint` returns undefined.
+ * The primary hit-tester depends on `e.target`, which is unreliable on
+ * players where the caption layer has `pointer-events: none` (the click
+ * lands on the video wrapper, not the caption). This fallback does not
+ * depend on `e.target` at all — it re-derives the target purely from
+ * coordinates.
+ *
+ * Returns null when the point is not inside a video or when no text
+ * element under the point looks like a caption.
  */
+function findCaptionElementAtPoint(clientX: number, clientY: number): HTMLElement | null {
+  // 1. Find the video whose rect contains the point.
+  let video: HTMLVideoElement | null = null;
+  for (const v of document.querySelectorAll('video')) {
+    const r = v.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    if (
+      clientX >= r.left && clientX <= r.right &&
+      clientY >= r.top && clientY <= r.bottom
+    ) {
+      video = v;
+      break;
+    }
+  }
+  if (!video) return null;
+
+  const root = video.parentElement?.parentElement ?? video.parentElement;
+  if (!root) return null;
+
+  let best: HTMLElement | null = null;
+  let bestArea = Infinity;
+
+  const walk = (el: Element) => {
+    if (!(el instanceof HTMLElement)) return;
+    if (el.closest('#subany-extension-root')) return;
+    if (SKIP_TAGS.has(el.tagName.toLowerCase())) return;
+
+    // Deepest match wins: descend before self-check.
+    // Iterate with firstElementChild / nextElementSibling so we never index
+    // into an array under `noUncheckedIndexedAccess`.
+    for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
+      walk(child);
+    }
+
+    // Skip UI chrome text (button labels, timecodes, controls).
+    if (el.closest(CONTROL_SELECTOR)) return;
+
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return;
+    if (clientX < r.left || clientX > r.right) return;
+    if (clientY < r.top || clientY > r.bottom) return;
+
+    const text = (el.textContent ?? '').trim();
+    if (text.length < 2 || text.length > 400) return;
+    if (!/[\p{L}]/u.test(text)) return;
+
+    const area = r.width * r.height;
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
+    }
+  };
+
+  walk(root);
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Deps
+// ---------------------------------------------------------------------------
+
 export interface SelectionDeps {
   lockContainer: (element: HTMLElement) => Promise<void>;
   stopAutoDetection: () => void;
   resumeAutoDetection: () => void;
+  startVideoMonitor: () => void;
+  stopVideoMonitor: () => void;
 }
 
 /**
@@ -58,8 +143,6 @@ export function startSelection(state: ContentState, deps: SelectionDeps): void {
   deps.stopAutoDetection();
   state.isSelecting = true;
   state.selectionCandidateEl = null;
-  // Reset throttle so the first mousemove after entering selection always
-  // fires the preview.
   lastMoveAt = 0;
   lastMoveX = 0;
   lastMoveY = 0;
@@ -75,11 +158,13 @@ export function cancelSelection(
   deps: SelectionDeps,
   opts: { resumeAuto?: boolean } = {},
 ): void {
+  const hadNativeSelection = !!state.virtualSelectionHit;
   state.isSelecting = false;
   state.selectionCandidateEl = null;
   state.virtualSelectionHit = null;
   state.hoveredWordRect = null;
   state.notify();
+  if (hadNativeSelection) deps.stopVideoMonitor();
   if (opts.resumeAuto !== false) deps.resumeAutoDetection();
 }
 
@@ -106,8 +191,6 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
   lastMoveX = e.clientX;
   lastMoveY = e.clientY;
 
-  // Cheap pre-filter: if the cursor is not over any <video>, there is
-  // nothing to preview. Avoids the more expensive hit-test.
   if (!isPointerOverAnyVideo(e.clientX, e.clientY)) {
     if (state.selectionCandidateEl !== null) {
       state.selectionCandidateEl = null;
@@ -116,12 +199,11 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
     return;
   }
 
-  // The same function the click path uses. On sites whose captions have
-  // pointer-events:none, this falls through to the pruned geometric walk
-  // scoped to the video's grandparent.
-  const candidate = getSubtitleElementAtPoint(e.clientX, e.clientY, null);
+  // Primary hit-tester, then fall back to the geometric resolver so the
+  // preview matches what the click will install.
+  let candidate = getSubtitleElementAtPoint(e.clientX, e.clientY, null);
+  if (!candidate) candidate = findCaptionElementAtPoint(e.clientX, e.clientY);
 
-  // Only re-render when the candidate actually changed.
   if (candidate !== state.selectionCandidateEl) {
     state.selectionCandidateEl = candidate;
     state.notify();
@@ -134,13 +216,11 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
  * Precedence:
  *   1. A DOM element under the click → lock it (via the same hit-test as
  *      the hover preview).
+ *   1b. Geometric fallback when the primary hit-test misses (players with
+ *      `pointer-events: none` on the caption layer).
  *   2. The current active container, if the click was inside it.
  *   3. A native TextTrack cue → keep it as the virtual selection target.
  *   4. Anything else → cancel selection.
- *
- * `isSelecting` is flipped to false before awaiting `lockContainer` so
- * downstream re-renders are not confused by "isSelecting still true while
- * a lock installs".
  */
 export function handleSelectionClick(
   state: ContentState,
@@ -153,9 +233,27 @@ export function handleSelectionClick(
 
   const target = e.target as HTMLElement | null;
 
-  // 1. Retrieve the clicked subtitle element.
-  const clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target);
-  console.log('[SubAny] click', e.clientX, e.clientY, 'leaf:', clickedLeaf?.className, 'leafRect:', clickedLeaf ? JSON.stringify(clickedLeaf.getBoundingClientRect()) : null);
+  // 1. Primary hit-test.
+  let clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target);
+  console.log(
+    '[SubAny] click', e.clientX, e.clientY,
+    'leaf:', clickedLeaf?.className,
+    'leafRect:', clickedLeaf ? JSON.stringify(clickedLeaf.getBoundingClientRect()) : null,
+  );
+
+  // 1b. Geometric fallback. Runs when the primary hit-test cannot resolve
+  //     a caption (very common on players with pointer-events:none on the
+  //     caption layer). Resolves the target purely from coordinates.
+  if (!clickedLeaf) {
+    clickedLeaf = findCaptionElementAtPoint(e.clientX, e.clientY);
+    if (clickedLeaf) {
+      console.log(
+        '[SubAny] click fallback resolved:',
+        clickedLeaf.className,
+        JSON.stringify(clickedLeaf.getBoundingClientRect()),
+      );
+    }
+  }
 
   if (clickedLeaf) {
     const video = getVideoForElement(clickedLeaf);
@@ -164,6 +262,8 @@ export function handleSelectionClick(
 
     state.isSelecting = false;
     state.selectionCandidateEl = null;
+    // Clearing virtualSelectionHit here is what suppresses the native proxy
+    // box the moment a real DOM lock installs.
     state.virtualSelectionHit = null;
     state.hoveredWordRect = null;
     state.notify();
@@ -190,7 +290,8 @@ export function handleSelectionClick(
     state.isSelecting = false;
     state.selectionCandidateEl = null;
     state.virtualSelectionHit = hit.native;
-    state.hoveredWordRect = hit.native.rect;
+    state.hoveredWordRect = null;
+    deps.startVideoMonitor();
     state.notify();
     return;
   }
@@ -215,9 +316,6 @@ export function handleSelectionContextMenu(
 
 /**
  * Cancel a selection on Escape.
- *
- * Return value indicates whether the key was consumed, so the caller can
- * decide whether to stop propagation.
  */
 export function handleSelectionEscape(
   state: ContentState,

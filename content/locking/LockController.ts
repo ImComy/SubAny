@@ -135,6 +135,7 @@ export class LockController {
     s.autoNativeLastText = '';
     s.autoNativeLastVideo = null;
     s.autoNativeTranslationToken++;
+    s.virtualSelectionHit = null;
 
     s.settings.lockedSelector = null;
     this.deps.subtitleManager.setLockedSelector(null);

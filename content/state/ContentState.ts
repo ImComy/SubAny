@@ -53,6 +53,10 @@ export class ContentState {
   lockedVisualProxyEl: HTMLDivElement | null = null;
   lockedVisualProxyStyle: CSSStyleDeclaration | null = null;
   lockedContainerObserver: MutationObserver | null = null;
+  lockedPositionObserver: ResizeObserver | null = null;
+  lockedPositionEventTarget: HTMLElement | null = null;
+  lockedPositionEventHandler: ((event: Event) => void) | null = null;
+  lastLockedRect: DOMRect | null = null;
 
   // Auto-tracking.
   autoDetectionTimer: number | null = null;

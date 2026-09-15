@@ -3,6 +3,7 @@
 import type { ContentState } from '../state/ContentState';
 import type { DomTextSwapper } from '../replacement/DomTextSwapper';
 import { maintainLockedContainer } from '../locking/LockMonitor';
+import { findActiveNativeSubtitleForVideo } from '../detection/NativeSubtitleDetector';
 import { normalizeSubtitleText } from '../../utils/text';
 import {
   handleSubtitleTextChange,
@@ -34,6 +35,20 @@ export interface TrackingTickDeps {
  */
 export function runTrackingTick(deps: TrackingTickDeps): void {
   const { state, domSwapper, subtitleTranslation, updateAutoDetection } = deps;
+
+  if (state.virtualSelectionHit && !state.settings.lockedSelector) {
+    const nativeHit = findActiveNativeSubtitleForVideo(
+      state.virtualSelectionHit.video,
+      state.virtualSelectionHit.rect,
+    );
+    if (nativeHit && nativeHit.video === state.virtualSelectionHit.video) {
+      const changed = nativeHit.text !== state.virtualSelectionHit.text ||
+        nativeHit.rect.left !== state.virtualSelectionHit.rect.left ||
+        nativeHit.rect.top !== state.virtualSelectionHit.rect.top;
+      state.virtualSelectionHit = nativeHit;
+      if (changed) state.notify();
+    }
+  }
 
   if (state.settings.lockedSelector) {
     maintainLockedContainer(state, (text) => {

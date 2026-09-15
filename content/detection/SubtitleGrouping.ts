@@ -8,7 +8,7 @@ import { isPlayerControlRegion } from './CandidateScorer';
 export function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null): boolean {
   if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
 
-  const rawText = normalizeSubtitleText(el.innerText || el.textContent || '');
+  const rawText = normalizeSubtitleText(el.textContent || '');
   if (!rawText || !isSubtitleText(rawText)) return false;
   if (isPlayerControlRegion(el)) return false;
 
@@ -19,7 +19,7 @@ export function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null)
   if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return false;
   if (el.closest('.control, .controls, .progress, .volume, .player-controls')) return false;
 
-  const text = normalizeSubtitleText(el.innerText || '');
+  const text = normalizeSubtitleText(el.textContent || '');
   if (!text || !isSubtitleText(text)) return false;
 
   const rect = el.getBoundingClientRect();
@@ -124,8 +124,8 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
   const group = getLowestCommonHTMLElement(related);
   if (!group || group === anchor) return anchor;
 
-  const expectedText = normalizeSubtitleText(related.map((el) => el.innerText || '').join(' '));
-  const actualText = normalizeSubtitleText(group.innerText || '');
+  const expectedText = normalizeSubtitleText(related.map((el) => el.textContent || '').join(' '));
+  const actualText = normalizeSubtitleText(group.textContent || '');
 
   if (!expectedText || actualText !== expectedText) return anchor;
   if (!isSubtitleText(actualText)) return anchor;

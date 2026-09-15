@@ -72,7 +72,6 @@ export function getDeepestTextContainer(el: HTMLElement): HTMLElement {
 
     if (children.length === 1) {
       const child = children[0] as HTMLElement;
-      // Use textContent, never innerText, to avoid forced layout.
       if (child.textContent?.trim() === current.textContent?.trim()) {
         if (child.children.length === 0) {
           current = child;
@@ -84,6 +83,36 @@ export function getDeepestTextContainer(el: HTMLElement): HTMLElement {
     }
     break;
   }
+  return current;
+}
+
+/**
+ * Prefer the smallest descendant that still contains the same subtitle text.
+ *
+ * This matters on players that wrap a short, moving caption in a structural
+ * container (for example, a span/bloc wrapper around the actual text node). The
+ * wrapper is a stable anchor for cue tracking, but the visual selection box must
+ * follow the text-bearing leaf instead of the entire wrapper.
+ */
+export function getPreferredSubtitleLeaf(el: HTMLElement): HTMLElement {
+  let current: HTMLElement = el;
+
+  while (current.children.length === 1) {
+    const child = current.children[0] as HTMLElement;
+    const currentText = (current.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const childText = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+    if (!currentText || !childText || currentText !== childText) break;
+
+    const parentRect = current.getBoundingClientRect();
+    const childRect = child.getBoundingClientRect();
+    if (parentRect.width <= 0 || parentRect.height <= 0) break;
+    if (childRect.width <= 0 || childRect.height <= 0) break;
+    if (childRect.width > parentRect.width || childRect.height > parentRect.height) break;
+
+    current = child;
+  }
+
   return current;
 }
 
@@ -403,7 +432,7 @@ export function getSubtitleElementAtPoint(
 
   for (const el of stack) {
     if (!isPlausibleSubtitleLeaf(el, vr)) continue;
-    return getDeepestTextContainer(el);
+    return getPreferredSubtitleLeaf(el);
   }
 
   // ---- Path B: geometric walk ----
@@ -448,7 +477,7 @@ export function getSubtitleElementAtPoint(
     }
   }
 
-  return best ? getDeepestTextContainer(best) : null;
+  return best ? getPreferredSubtitleLeaf(best) : null;
 }
 
 export function resolvePlayerContainer(element: HTMLElement): HTMLElement | null {

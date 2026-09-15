@@ -25,6 +25,6 @@ export function getUniversalSubtitleHit(clientX: number, clientY: number): {
 }
 
 export { findBestSubtitleContainer, findSubtitleByGeometry, findGenuineSubtitleCandidate } from './DomSubtitleDetector';
-export { findNativeSubtitleAtPoint, isLikelySubtitleZone, findCurrentNativeAutoCue, prepareNativeTextTrack } from './NativeSubtitleDetector';
-export type { NativeSubtitleHit } from './NativeSubtitleDetector';
+export { findNativeSubtitleAtPoint, findNativeWordAtPoint, isLikelySubtitleZone, findCurrentNativeAutoCue, prepareNativeTextTrack } from './NativeSubtitleDetector';
+export type { NativeSubtitleHit, NativeWordHit } from './NativeSubtitleDetector';
 export type { CandidateScore } from './CandidateScorer';

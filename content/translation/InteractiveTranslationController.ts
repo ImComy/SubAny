@@ -4,7 +4,7 @@ import type { ContentState } from '../state/ContentState';
 import { TextExtractor, type TextExtractionResult } from '../../lib/TextExtractor';
 import type { TranslationManager } from '../../lib/TranslationManager';
 import type { VideoController } from '../../lib/VideoController';
-import { findNativeSubtitleAtPoint } from '../detection/SubtitleDetector';
+import { findNativeSubtitleAtPoint, findNativeWordAtPoint } from '../detection/SubtitleDetector';
 import { getHitAt, isOverActiveContainer } from '../selection/SubtitleHitTester';
 import { isSubtitleText } from '../../utils/text';
 import {
@@ -75,6 +75,29 @@ export function extractAt(state: ContentState, e: MouseEvent): TextExtractionRes
  * nothing.
  */
 export function extractAtUniversal(state: ContentState, e: MouseEvent): TextExtractionResult {
+  if (state.virtualSelectionHit) {
+    const rect = state.virtualSelectionHit.rect;
+    const insideNativeCue =
+      e.clientX >= rect.left - 8 && e.clientX <= rect.right + 8 &&
+      e.clientY >= rect.top - 8 && e.clientY <= rect.bottom + 8;
+    if (!insideNativeCue) return { text: '', rect: null, mode: 'word' };
+
+    if (e.ctrlKey || e.shiftKey) {
+      return {
+        text: state.virtualSelectionHit.text,
+        rect: state.virtualSelectionHit.rect,
+        mode: 'phrase',
+      };
+    }
+
+    const nativeWord = findNativeWordAtPoint(state.virtualSelectionHit, e.clientX, e.clientY);
+    if (nativeWord) {
+      return { text: nativeWord.text, rect: nativeWord.rect, mode: 'word' };
+    }
+
+    return { text: '', rect: null, mode: 'word' };
+  }
+
   const domExtraction = extractAt(state, e);
   if (domExtraction.text) return domExtraction;
 
@@ -171,6 +194,18 @@ export function handleInteractiveMouseMove(
     }
   }
 
+  if (state.virtualSelectionHit) {
+    const extraction = extractAtUniversal(state, e);
+    if (extraction.text) {
+      state.hoveredWordRect = extraction.rect;
+      if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
+      hoverWordTimeout = window.setTimeout(() => {
+        void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+      }, 35);
+      return;
+    }
+  }
+
   const hoveredTarget = e.target as HTMLElement | null;
   const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && state.activeContainerEl.contains(hoveredTarget);
   const overDomSubtitle = activeContainsPointer || tContainsActive || isOverActiveContainer(state, e);
@@ -218,6 +253,13 @@ export function handleInteractiveClick(
       void doTranslate(state, deps, extraction, e.clientX, e.clientY);
     }
     return;
+  }
+
+  if (state.virtualSelectionHit) {
+    const extraction = extractAtUniversal(state, e);
+    if (extraction.text) {
+      void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+    }
   }
 
   const hoveredTarget = e.target as HTMLElement | null;

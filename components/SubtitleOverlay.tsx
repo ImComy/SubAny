@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export interface SubtitleOverlayProps {
   glowTarget: HTMLElement | null;
   lockedElement: HTMLElement | null;
+  lockedRect?: DOMRect | null;
   selectionCandidate: HTMLElement | null;
   isSelecting: boolean;
+  nativeSelectionRect?: DOMRect | null;
   hoveredWordRect?: DOMRect | null;
   /** Determines highlight pill color + shape */
   highlightMode?: 'word' | 'phrase' | 'range';
@@ -26,8 +28,10 @@ const MODE_COLORS: Record<string, string> = {
 export function SubtitleOverlay({
   glowTarget,
   lockedElement,
+  lockedRect,
   selectionCandidate,
   isSelecting,
+  nativeSelectionRect,
   hoveredWordRect,
   highlightMode,
   isLoading = false,
@@ -48,58 +52,60 @@ export function SubtitleOverlay({
   const mode: 'word' | 'phrase' | 'range' = highlightMode ?? 'word';
   const colorBase = MODE_COLORS[mode] ?? MODE_COLORS.word;
 
-  // Position overlays imperatively. Geometry is transient DOM state, not UI state.
-  useEffect(() => {
+  // Position overlays from the current DOM rects; do not loop every frame.
+  // The overlay should only move when the target or lock state changes,
+  // not continuously while the page is animating.
+  useLayoutEffect(() => {
     const targets = [
       [glowTarget, glowRef.current, 6],
-      [lockedElement, lockedRef.current, 4],
       [lockedElement && bilingualText ? lockedElement : null, bilingualRef.current, 0],
       [selectionCandidate && isSelecting ? selectionCandidate : null, candidateRef.current, 0],
     ] as const;
-    if (!targets.some(([target, overlay]) => target && overlay)) return;
 
-    let animId: number;
-    const update = () => {
-      for (const [target, overlay, padding] of targets) {
-        if (!overlay) continue;
-        if (!target) {
-          overlay.style.display = 'none';
-          continue;
-        }
-        const rect = target.getBoundingClientRect();
-        overlay.style.display = rect.width > 0 && rect.height > 0 ? 'block' : 'none';
-        if (overlay === bilingualRef.current) {
-          overlay.style.left = `${rect.left}px`;
-          overlay.style.top = `${rect.bottom + 8}px`;
-          overlay.style.width = `${rect.width}px`;
-        } else {
-          overlay.style.left = `${rect.left - padding}px`;
-          overlay.style.top = `${rect.top - padding}px`;
-          overlay.style.width = `${rect.width + padding * 2}px`;
-          overlay.style.height = `${rect.height + padding * 2}px`;
-        }
+    for (const [target, overlay, padding] of targets) {
+      if (!overlay) continue;
+      if (!target) {
+        overlay.style.display = 'none';
+        continue;
       }
-      animId = requestAnimationFrame(update);
-    };
-    update();
-    return () => cancelAnimationFrame(animId);
-  }, [glowTarget, lockedElement, selectionCandidate, isSelecting, bilingualText, isGlowActive]);
 
-  useEffect(() => {
+      const rect = target.getBoundingClientRect();
+      overlay.style.display = rect.width > 0 && rect.height > 0 ? 'block' : 'none';
+      if (overlay === bilingualRef.current) {
+        overlay.style.left = `${rect.left}px`;
+        overlay.style.top = `${rect.bottom + 8}px`;
+        overlay.style.width = `${rect.width}px`;
+      } else {
+        overlay.style.left = `${rect.left - padding}px`;
+        overlay.style.top = `${rect.top - padding}px`;
+        overlay.style.width = `${rect.width + padding * 2}px`;
+        overlay.style.height = `${rect.height + padding * 2}px`;
+      }
+    }
+
+    if (lockedRef.current) {
+      if (!lockedRect) {
+        lockedRef.current.style.display = 'none';
+      } else {
+        lockedRef.current.style.display = 'block';
+        lockedRef.current.style.left = `${lockedRect.left - 4}px`;
+        lockedRef.current.style.top = `${lockedRect.top - 4}px`;
+        lockedRef.current.style.width = `${lockedRect.width + 8}px`;
+        lockedRef.current.style.height = `${lockedRect.height + 8}px`;
+      }
+    }
+  }, [glowTarget, lockedElement, lockedRect, selectionCandidate, isSelecting, bilingualText, isGlowActive]);
+
+  useLayoutEffect(() => {
     if (!externalSubtitleVideo || !externalSubtitleText || !externalRef.current) return;
-    let frameId: number;
-    const update = () => {
-      const rect = externalSubtitleVideo.getBoundingClientRect();
-      const overlay = externalRef.current;
-      if (overlay) {
-        overlay.style.left = `${rect.left + rect.width * 0.08}px`;
-        overlay.style.top = `${rect.top + rect.height * 0.78}px`;
-        overlay.style.width = `${rect.width * 0.84}px`;
-      }
-      frameId = requestAnimationFrame(update);
-    };
-    update();
-    return () => cancelAnimationFrame(frameId);
+
+    const rect = externalSubtitleVideo.getBoundingClientRect();
+    const overlay = externalRef.current;
+    if (overlay) {
+      overlay.style.left = `${rect.left + rect.width * 0.08}px`;
+      overlay.style.top = `${rect.top + rect.height * 0.78}px`;
+      overlay.style.width = `${rect.width * 0.84}px`;
+    }
   }, [externalSubtitleVideo, externalSubtitleText]);
 
   // Glow trigger
@@ -164,6 +170,23 @@ export function SubtitleOverlay({
             zIndex: 2147483635,
             transition: 'all 0.06s ease-out',
             animation: isLoading ? 'subany-loading-pulse 1s ease-in-out infinite' : undefined,
+          }}
+        />
+      )}
+
+      {nativeSelectionRect && !isSelecting && !lockedElement && (
+        <div
+          style={{
+            position: 'fixed',
+            left: `${nativeSelectionRect.left - 4}px`,
+            top: `${nativeSelectionRect.top - 4}px`,
+            width: `${nativeSelectionRect.width + 8}px`,
+            height: `${nativeSelectionRect.height + 8}px`,
+            borderRadius: '8px',
+            border: '1.5px dashed rgba(56, 189, 248, 0.7)',
+            boxShadow: '0 0 12px rgba(56, 189, 248, 0.18)',
+            pointerEvents: 'none',
+            zIndex: 2147483620,
           }}
         />
       )}

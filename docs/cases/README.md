@@ -20,6 +20,9 @@ Never renumbered.
 | [013](./013-near-miss-clicks.md) | Clicks 6–9px outside the caption didn't register | Detection | Fixed | All |
 | [014](./014-auto-detect-dies-on-empty.md) | Auto-detect stopped permanently after first silence | Lifecycle | Fixed | All |
 | [015](./015-dynamic-ids-in-selectors.md) | Selectors generated from counter IDs broke on rebuild | Persistence | Fixed | YouTube |
+| [016](./016-native-cue-selection-drift.md) | Native cue selection box was broad, static, and not word-interactive | UI | Fixed | Native TextTrack players |
+| [017](./017-wrapper-border-used-container-rect.md) | Locked border used the wrapper rectangle instead of text bounds | UI | Fixed | DOM subtitle players |
+| [018](./018-overlay-stale-rects-after-click.md) | Overlay kept a stale rect after click | UI | Fixed | All DOM subtitle players |
 
 ## Categories
 

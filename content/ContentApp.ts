@@ -146,6 +146,8 @@ export class ContentApp {
           void this.ensureAutoDetectionLease();
         }
       },
+      startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }),
+      stopVideoMonitor: () => stopVideoMonitor(),
     };
   }
 
@@ -186,6 +188,7 @@ export class ContentApp {
     }));
 
     window.addEventListener('resize', this.onResize, { passive: true });
+    window.addEventListener('scroll', this.onResize, { passive: true, capture: true });
 
     this.renderer.render();
 
@@ -201,6 +204,7 @@ export class ContentApp {
     }
 
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('scroll', this.onResize, true);
 
     for (const handle of this.handles.reverse()) {
       try { handle.dispose(); } catch (_) { /* ignore */ }
@@ -376,6 +380,7 @@ export class ContentApp {
     const s = this.state;
     if (s.settings.lockedSelector || s.lockedSubtitleAnchor) {
       updateLockedVisualProxy(s);
+      s.notify();
     }
   };
 

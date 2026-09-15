@@ -51,7 +51,7 @@ export function createLockedAnchor(element: HTMLElement): LockedSubtitleAnchor |
       ? { left: videoRect.left, top: videoRect.top, width: videoRect.width, height: videoRect.height }
       : null,
     videoSignature: getVideoSignature(video),
-    textHint: normalizeSubtitleText(element.innerText || ''),
+    textHint: normalizeSubtitleText(element.textContent || ''),
     updatedAt: performance.now(),
   };
 }
@@ -62,7 +62,7 @@ export function createLockedAnchor(element: HTMLElement): LockedSubtitleAnchor |
  */
 export function getCurrentLockedText(element: HTMLElement | null): string {
   if (!element || !document.documentElement.contains(element)) return '';
-  return normalizeSubtitleText(element.innerText || element.textContent || '');
+  return normalizeSubtitleText(element.textContent || '');
 }
 
 /**
@@ -121,7 +121,7 @@ export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect 
   if (rect.width <= 0 || rect.height <= 0) return false;
   if (rect.width > window.innerWidth * 0.96) return false;
   if (rect.height > window.innerHeight * 0.30) return false;
-  if (!isSubtitleText(normalizeSubtitleText(element.innerText || element.textContent || ''))) return false;
+  if (!isSubtitleText(normalizeSubtitleText(element.textContent || ''))) return false;
 
   if (videoRect) {
     if (rect.width >= videoRect.width * 0.96) return false;
