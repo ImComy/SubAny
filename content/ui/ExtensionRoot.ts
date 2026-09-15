@@ -43,7 +43,7 @@ export class ExtensionRoot {
     host.style.zIndex = '2147483647';
     host.style.pointerEvents = 'none';
     const shadow = host.attachShadow({ mode: 'open' });
-    document.body.appendChild(host);
+    (document.documentElement || document.body).appendChild(host);
 
     this.hostElement = host;
     this.shadowRoot = shadow;

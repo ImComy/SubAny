@@ -6,6 +6,7 @@ import type { TranslationManager } from '../../lib/TranslationManager';
 import type { VideoController } from '../../lib/VideoController';
 import { findNativeSubtitleAtPoint } from '../detection/SubtitleDetector';
 import { getHitAt, isOverActiveContainer } from '../selection/SubtitleHitTester';
+import { isSubtitleText } from '../../utils/text';
 import {
   beginInteractiveTranslation,
   clearInteractiveTranslation,
@@ -39,17 +40,13 @@ export interface InteractiveTranslationDeps {
 
 /**
  * Hover debounce timer. Module-scoped because there is exactly one
- * InteractiveTranslationController per content script instance, and the
- * original also kept this in the outer closure.
+ * InteractiveTranslationController per content script instance.
  */
 let hoverWordTimeout: number | null = null;
 
 /**
  * Read the current translation target from the DOM, honouring the
  * Ctrl (full phrase) and Shift (range anchor) modifiers.
- *
- * Mirrors the original `extractAt` exactly, including the side effect of
- * storing/clearing the shift-range anchor in state.
  */
 export function extractAt(state: ContentState, e: MouseEvent): TextExtractionResult {
   if (e.ctrlKey) {
@@ -75,7 +72,7 @@ export function extractAt(state: ContentState, e: MouseEvent): TextExtractionRes
 /**
  * Extraction that can work when the visible subtitle has no DOM node.
  * Falls back to the active native TextTrack cue when DOM extraction yields
- * nothing. Mirrors the original `extractAtUniversal`.
+ * nothing.
  */
 export function extractAtUniversal(state: ContentState, e: MouseEvent): TextExtractionResult {
   const domExtraction = extractAt(state, e);
@@ -96,12 +93,17 @@ export function extractAtUniversal(state: ContentState, e: MouseEvent): TextExtr
 /**
  * Kick off a translation for the given extraction and pop the tooltip.
  *
- * Mirrors the original `doTranslate`. Notably:
- *   - Empty text clears tooltip/highlight and returns without rendering a
- *     stale tooltip.
- *   - Video is paused (when the setting is on) before the network call.
- *   - The result is only applied if the tooltip's original text still
- *     matches, so a newer request is never overwritten by an older one.
+ * The `isSubtitleText` guard is the single funnel that catches anything
+ * an extraction path can accidentally return when a site reuses the caption
+ * node for other content. The most common case is a player that swaps its
+ * caption text for the timeline between cues (`38:05 / 01:07:17`), causing
+ * a hover over that region to extract the digits `"38"` and "translate"
+ * them into `"38"`. Without this guard the tooltip looks like the extension
+ * is confusing player chrome for a subtitle.
+ *
+ * Because every extraction path (getWord, getFullPhrase,
+ * getRangeBetweenPoints, native TextTrack fallback) funnels through here,
+ * one check is enough to cover all of them.
  */
 export async function doTranslate(
   state: ContentState,
@@ -110,7 +112,7 @@ export async function doTranslate(
   clientX: number,
   clientY: number,
 ): Promise<void> {
-  if (!extraction.text) {
+  if (!extraction.text || !isSubtitleText(extraction.text)) {
     clearInteractiveTranslation(state);
     state.notify();
     return;
@@ -135,12 +137,11 @@ export async function doTranslate(
 /**
  * Document-level mousemove handler.
  *
- * Matches the original anonymous listener:
- *   - Skipped while selection mode is active.
- *   - When the cursor is over the active container (DOM) or over a native
- *     cue, arms a short debounce that reads the current target and translates.
- *   - When the cursor leaves, clears the tooltip/highlight and resumes video
- *     if it was paused by the extension.
+ * Skipped while selection mode is active, or when the trigger mode is not
+ * `hover`. When the cursor is over the active container (DOM) or a native
+ * cue, arms a short debounce that reads the target and translates. When the
+ * cursor leaves, clears the tooltip/highlight and resumes video if it was
+ * paused by the extension.
  */
 export function handleInteractiveMouseMove(
   state: ContentState,
@@ -192,9 +193,8 @@ export function handleInteractiveMouseMove(
 /**
  * Document-level click handler.
  *
- * Matches the original listener: only fires a translation when the user is
- * in `click` trigger mode and the cursor is over the active container or a
- * native cue.
+ * Only fires a translation when the user is in `click` trigger mode and the
+ * cursor is over the active container or a native cue.
  */
 export function handleInteractiveClick(
   state: ContentState,
@@ -232,13 +232,6 @@ export function handleInteractiveClick(
 
 /**
  * Document-level keydown handler for the Ctrl-held phrase refresh.
- *
- * Matches the original listener: while a tooltip is visible, pressing
- * Control re-reads the full phrase at the tooltip's stored position and
- * re-translates when the text differs from what is already shown.
- *
- * Note the deliberate difference from `extractAt`'s Ctrl path: the original
- * passes no container to `getFullPhrase` here, so we do the same.
  */
 export function handleInteractiveKeyDown(
   state: ContentState,
@@ -255,8 +248,7 @@ export function handleInteractiveKeyDown(
 }
 
 /**
- * Cancel any pending hover debounce. Called on teardown / mode change so a
- * queued timer cannot fire against a torn-down state.
+ * Cancel any pending hover debounce. Called on teardown / mode change.
  */
 export function cancelInteractiveHover(): void {
   if (hoverWordTimeout) {

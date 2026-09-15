@@ -332,3 +332,7 @@ sure about, ask the user:
 > second on a large page. Is that within the performance budget?"
 
 The user can answer. Don't guess.
+
+
+
+The extension host must be appended to document.documentElement, not document.body. Pages routinely apply body > * selectors (display:none, opacity:0, transform, filter) that would otherwise hide the extension. <html > div is not matched by body > * and is immune to body-clearing scripts.
