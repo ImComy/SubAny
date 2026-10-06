@@ -2,7 +2,7 @@
 
 import {
   getSubtitleElementAtPoint,
-  getDeepestTextContainer,
+  resolveCaptionLineContainer,
 } from '../../utils/dom';
 import { isSubtitleText } from '../../utils/text';
 import { combineSubtitleLines } from './SubtitleGrouping';
@@ -100,8 +100,6 @@ export function findBestSubtitleContainer(): HTMLElement | null {
 
       // Skip anything that isn't plausibly a caption leaf.
       if (r.width > vr.width * 0.95 && r.height > vr.height * 0.15) continue;
-const centerY = r.top + r.height / 2;
-if (centerY < vr.top + vr.height * 0.15) continue;
 
       const text = (el.textContent ?? '').trim();
       if (text.length < 2 || text.length > 400) continue;
@@ -115,7 +113,8 @@ if (centerY < vr.top + vr.height * 0.15) continue;
     }
 
     if (best) {
-      return combineSubtitleLines(getDeepestTextContainer(best), vr);
+      const line = resolveCaptionLineContainer(best, vr);
+      return combineSubtitleLines(line, vr);
     }
   }
 
@@ -124,7 +123,7 @@ if (centerY < vr.top + vr.height * 0.15) continue;
   if (live) {
     const text = (live.textContent ?? '').trim();
     if (text.length >= 2 && isSubtitleText(text)) {
-      return getDeepestTextContainer(live);
+      return resolveCaptionLineContainer(live);
     }
   }
 

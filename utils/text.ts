@@ -1,5 +1,6 @@
 export function normalizeSubtitleText(text: string): string {
   return text
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -33,6 +34,7 @@ export function cueToPlainText(cue: TextTrackCue): string {
 
   const doc = new DOMParser().parseFromString(raw, 'text/html');
   return (doc.body.textContent || raw)
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

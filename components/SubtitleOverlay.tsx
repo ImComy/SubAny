@@ -206,7 +206,7 @@ export function SubtitleOverlay({
             boxShadow: '0 0 12px rgba(56, 189, 248, 0.12)',
             pointerEvents: 'none',
             zIndex: 2147483620,
-            transition: 'all 0.15s ease',
+            transition: 'opacity 0.15s ease',
           }}
         >
           {/* Tracked badge */}

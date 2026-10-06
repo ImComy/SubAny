@@ -22,6 +22,9 @@ fix attempt — see **Misfiled cases** below.
 | [014](./014-auto-detect-dies-on-empty.md) | Auto-detect stopped permanently after first silence | Lifecycle | Fixed | All |
 | [015](./015-dynamic-ids-in-selectors.md) | Selectors generated from counter IDs broke on rebuild | Persistence | Fixed | YouTube |
 | [016](./016-native-cue-selection-drift.md) | Native cue selection box was broad, static, and not word-interactive | UI | Fixed | Native TextTrack players |
+| [019](./019-top-and-out-of-frame-captions.md) | Top-of-screen and out-of-frame captions rejected by bottom-band gates | Detection | Fixed | All |
+| [020](./020-multi-span-leaf-selection.md) | Multi-span caption selection isolated single word instead of full sentence | Detection | Fixed | All |
+| [021](./021-transform-motion-tracking-stall.md) | Transform motion tracking stopped after empty cue gap until hover | Lifecycle | Fixed | All |
 
 Numbers 017 and 018 are retired. They were fix attempts during the
 diagnosis of case 016 that were mislabelled as their own cases. Their

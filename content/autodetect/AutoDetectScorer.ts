@@ -1,5 +1,4 @@
-// autodetect/AutoDetectScorer.ts
-
+import { resolveCaptionLineContainer } from '../../utils/dom';
 import { isPlaybackTimeText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
 import {
   getSubtitlePresentationAncestor,
@@ -41,6 +40,7 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
 
     if (cy >= 0.56 && cy <= 0.88) score += weights.subtitleBandY;
     else if (cy > 0.88 && cy <= 0.96) score += weights.lowerBandY;
+    else if (cy >= 0.04 && cy <= 0.28) score += weights.subtitleBandY - 5;
     else score += weights.outsideBandY;
 
     if (widthRatio > 0.04 && widthRatio < 0.82) score += weights.subtitleWidth;
@@ -131,7 +131,9 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
             rect.top >= videoRect.top - 20 &&
             rect.bottom <= videoRect.bottom + 20;
 
-          const inSubtitleBand = rect.top >= videoRect.top + videoRect.height * 0.35;
+          const inSubtitleBand =
+            (rect.top >= videoRect.top + videoRect.height * 0.35) ||
+            (rect.top >= videoRect.top + videoRect.height * 0.03 && rect.bottom <= videoRect.top + videoRect.height * 0.35);
 
           const tooBig =
             rect.width > videoRect.width * 0.90 &&
@@ -164,11 +166,12 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
     const videoRect = candidate.video?.getBoundingClientRect() ?? null;
     if (isPlayerControlRegion(candidate.element, videoRect)) continue;
 
-    const grouped = combineSubtitleLines(candidate.element, videoRect);
+    const lineContainer = resolveCaptionLineContainer(candidate.element, videoRect);
+    const grouped = combineSubtitleLines(lineContainer, videoRect);
     const finalElement =
       isUsableSubtitleLine(grouped, videoRect) && !isPlayerControlRegion(grouped, videoRect)
         ? grouped
-        : candidate.element;
+        : lineContainer;
 
     if (isPlayerControlRegion(finalElement, videoRect)) continue;
 

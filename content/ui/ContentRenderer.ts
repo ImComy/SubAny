@@ -5,6 +5,7 @@ import { SubtitleOverlay } from '../../components/SubtitleOverlay';
 import { Tooltip } from '../../components/Tooltip';
 import type { ContentState } from '../state/ContentState';
 import type { ExtensionRoot } from './ExtensionRoot';
+import { resolveCaptionLineContainer } from '../../utils/dom';
 
 export interface ContentRendererDeps {
   onUnlock: () => void;
@@ -189,7 +190,7 @@ export class ContentRenderer {
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
 
-    return container;
+    return resolveCaptionLineContainer(container);
   }
 
   /**

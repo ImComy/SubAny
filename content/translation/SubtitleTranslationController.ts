@@ -30,6 +30,9 @@ export interface SubtitleTranslationDeps {
  * the observed text, and the DomTextSwapper internally restores before each
  * swap.
  */
+let domTranslationDebounceTimer: number | null = null;
+let domTranslationToken = 0;
+
 export async function handleSubtitleTextChange(
   state: ContentState,
   deps: SubtitleTranslationDeps,
@@ -42,24 +45,43 @@ export async function handleSubtitleTextChange(
   if (!isReplaceNative && !isFullAuto) return;
   if (!text || text === state.lastObservedSubtitleText) return;
 
+  const previousText = state.lastObservedSubtitleText;
   state.lastObservedSubtitleText = text;
 
-  const res = await deps.translationManager.translate(
-    text,
-    state.settings.targetLanguage,
-    state.settings.sourceLanguage,
-    state.settings.engine,
-  );
+  // Prefix growth detection: if the new text extends previous text
+  // (live speech-to-text), debounce to avoid flooding translation requests.
+  const isPrefixExtension = !!previousText && text.startsWith(previousText) && text.length - previousText.length < 15;
+  const delay = isPrefixExtension ? 250 : 40;
 
-  if (!res.translation) return;
+  const token = ++domTranslationToken;
 
-  if (isReplaceNative && state.activeContainerEl) {
-    deps.domSwapper.swapText(state.activeContainerEl, res.translation);
-  } else if (isFullAuto) {
-    state.bilingualSubtitleText = res.translation;
+  if (domTranslationDebounceTimer) {
+    window.clearTimeout(domTranslationDebounceTimer);
   }
 
-  state.notify();
+  domTranslationDebounceTimer = window.setTimeout(async () => {
+    try {
+      const res = await deps.translationManager.translate(
+        text,
+        state.settings.targetLanguage,
+        state.settings.sourceLanguage,
+        state.settings.engine,
+      );
+
+      if (token !== domTranslationToken) return;
+      if (!res.translation) return;
+
+      if (isReplaceNative && state.activeContainerEl) {
+        deps.domSwapper.swapText(state.activeContainerEl, res.translation);
+      } else if (isFullAuto) {
+        state.bilingualSubtitleText = res.translation;
+      }
+
+      state.notify();
+    } catch (_) {
+      // Ignore network errors in auto-translation
+    }
+  }, delay);
 }
 
 /**

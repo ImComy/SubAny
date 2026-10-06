@@ -167,8 +167,10 @@ violation was a multi-day debugging session. Do not repeat them.
 15. **Never terminate a polling loop on a single empty result.** Silence is
     a state, not a failure.
 
-16. **Band checks use `centerY`, not `top`, and the floor is 15%.**
-    Captions sit wherever the player puts them. See `docs/cases/007`.
+16. **Band checks use `centerY`, not `top`, and the 15% top floor applies to unassisted auto/recovery only.**
+    User clicks, hover paths, and manual locks must recognize subtitles placed anywhere in the player's
+    acceptance region (including top subtitles in anime, dialogue placed near speakers, and out-of-frame
+    captions). Captions sit wherever the player puts them. See `docs/cases/007`.
 
 ---
 

@@ -76,7 +76,7 @@ function getCaretInfo(x: number, y: number): { node: Text; offset: number } | nu
 }
 
 function wordBounds(text: string, offset: number): { start: number; end: number; word: string } | null {
-  const regex = /[\p{L}\p{N}\p{M}'-]+/gu;
+  const regex = /[\p{L}\p{N}\p{M}\u200C\u200D'-]+/gu;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     const start = match.index;
@@ -118,7 +118,7 @@ export class TextExtractor {
       const text = node.textContent ?? '';
       if (!text.trim()) continue;
 
-      const regex = /[\p{L}\p{N}\p{M}'-]+/gu;
+      const regex = /[\p{L}\p{N}\p{M}\u200C\u200D'-]+/gu;
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text)) !== null) {
         const start = match.index;

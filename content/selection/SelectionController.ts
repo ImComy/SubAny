@@ -2,7 +2,7 @@
 
 import type { ContentState } from '../state/ContentState';
 import { getHitAt, type UniversalHit } from './SubtitleHitTester';
-import { getSubtitleElementAtPoint, getVideoForElement } from '../../utils/dom';
+import { getSubtitleElementAtPoint, getVideoForElement, getSubtitleAcceptanceRegion, isPlausibleSubtitleLeaf, resolveCaptionLineContainer } from '../../utils/dom';
 import { resolveStableContainer } from '../locking/LockMonitor';
 
 /**
@@ -23,16 +23,15 @@ let lastMoveY = 0;
 const MOVE_THROTTLE_MS = 60;
 const MOVE_MIN_DISTANCE_SQ = 16; // 4px squared
 
-function isPointerOverAnyVideo(clientX: number, clientY: number, padding = 8): boolean {
+function isPointerOverAnyVideo(clientX: number, clientY: number, padding = 24): boolean {
   const videos = document.querySelectorAll('video');
   for (const video of videos) {
-    const rect = video.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
+    const region = getSubtitleAcceptanceRegion(video);
     if (
-      clientX >= rect.left - padding &&
-      clientX <= rect.right + padding &&
-      clientY >= rect.top - padding &&
-      clientY <= rect.bottom + padding
+      clientX >= region.left - padding &&
+      clientX <= region.right + padding &&
+      clientY >= region.top - padding &&
+      clientY <= region.bottom + padding
     ) {
       return true;
     }
@@ -55,27 +54,20 @@ const SKIP_TAGS = new Set([
 ]);
 
 /**
- * Locate the smallest caption-like element containing the point.
+ * Locate the subtitle leaf element containing the point.
  *
- * Used as a fallback when `getSubtitleElementAtPoint` returns undefined.
- * The primary hit-tester depends on `e.target`, which is unreliable on
- * players where the caption layer has `pointer-events: none` (the click
- * lands on the video wrapper, not the caption). This fallback does not
- * depend on `e.target` at all — it re-derives the target purely from
- * coordinates.
- *
- * Returns null when the point is not inside a video or when no text
- * element under the point looks like a caption.
+ * Uses the shared `isPlausibleSubtitleLeaf` predicate and scores candidates
+ * to prevent locking arbitrary tiny text or full-width player chrome.
  */
 function findCaptionElementAtPoint(clientX: number, clientY: number): HTMLElement | null {
-  // 1. Find the video whose rect contains the point.
   let video: HTMLVideoElement | null = null;
   for (const v of document.querySelectorAll('video')) {
     const r = v.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
+    const region = getSubtitleAcceptanceRegion(v);
     if (
-      clientX >= r.left && clientX <= r.right &&
-      clientY >= r.top && clientY <= r.bottom
+      clientX >= region.left && clientX <= region.right &&
+      clientY >= region.top && clientY <= region.bottom
     ) {
       video = v;
       break;
@@ -83,45 +75,47 @@ function findCaptionElementAtPoint(clientX: number, clientY: number): HTMLElemen
   }
   if (!video) return null;
 
+  const vr = video.getBoundingClientRect();
   const root = video.parentElement?.parentElement ?? video.parentElement;
   if (!root) return null;
 
   let best: HTMLElement | null = null;
-  let bestArea = Infinity;
+  let bestScore = -Infinity;
 
   const walk = (el: Element) => {
     if (!(el instanceof HTMLElement)) return;
     if (el.closest('#subany-extension-root')) return;
     if (SKIP_TAGS.has(el.tagName.toLowerCase())) return;
 
-    // Deepest match wins: descend before self-check.
-    // Iterate with firstElementChild / nextElementSibling so we never index
-    // into an array under `noUncheckedIndexedAccess`.
     for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
       walk(child);
     }
 
-    // Skip UI chrome text (button labels, timecodes, controls).
     if (el.closest(CONTROL_SELECTOR)) return;
 
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return;
-    if (clientX < r.left || clientX > r.right) return;
-    if (clientY < r.top || clientY > r.bottom) return;
+    if (clientX < r.left - 12 || clientX > r.right + 12) return;
+    if (clientY < r.top - 12 || clientY > r.bottom + 12) return;
 
-    const text = (el.textContent ?? '').trim();
-    if (text.length < 2 || text.length > 400) return;
-    if (!/[\p{L}]/u.test(text)) return;
+    if (!isPlausibleSubtitleLeaf(el, vr, { allowTop: true })) return;
 
-    const area = r.width * r.height;
-    if (area < bestArea) {
-      bestArea = area;
+    let score = 100;
+    const centerY = r.top + r.height / 2;
+    const yRatio = (centerY - vr.top) / vr.height;
+    if ((yRatio >= 0.60 && yRatio <= 0.95) || (yRatio >= 0.04 && yRatio <= 0.30)) {
+      score += 20;
+    }
+    score -= (r.width * r.height) / 2000;
+
+    if (score > bestScore) {
+      bestScore = score;
       best = el;
     }
   };
 
   walk(root);
-  return best;
+  return best ? resolveCaptionLineContainer(best, vr) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +252,8 @@ export function handleSelectionClick(
   if (clickedLeaf) {
     const video = getVideoForElement(clickedLeaf);
     const videoRect = video?.getBoundingClientRect() ?? null;
-    const container = resolveStableContainer(clickedLeaf, videoRect);
+    const lineTarget = resolveCaptionLineContainer(clickedLeaf, videoRect);
+    const container = resolveStableContainer(lineTarget, videoRect);
 
     state.isSelecting = false;
     state.selectionCandidateEl = null;

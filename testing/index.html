@@ -201,10 +201,13 @@ function makePlayer(mount, opts = {}) {
   const captionText = shell.querySelector('.caption-text');
 
   const setCaption = (html) => {
-    if (captionText) {
-      captionText.innerHTML = html;
-    } else if (opts.customSetCaption) {
+    if (opts.customSetCaption) {
       opts.customSetCaption(shell, html);
+      return;
+    }
+    const currentText = shell.querySelector('.caption-text');
+    if (currentText) {
+      currentText.innerHTML = html;
     }
   };
 

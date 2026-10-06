@@ -7,6 +7,7 @@ import type { VideoController } from '../../lib/VideoController';
 import { findNativeSubtitleAtPoint, findNativeWordAtPoint } from '../detection/SubtitleDetector';
 import { getHitAt, isOverActiveContainer } from '../selection/SubtitleHitTester';
 import { isSubtitleText } from '../../utils/text';
+import { getSubtitleAcceptanceRegion } from '../../utils/dom';
 import {
   beginInteractiveTranslation,
   clearInteractiveTranslation,
@@ -17,15 +18,12 @@ import {
 function isPointerNearSubtitleBand(clientX: number, clientY: number, padding = 28): boolean {
   const videos = document.querySelectorAll('video');
   for (const video of videos) {
-    const rect = video.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    const bandTop = rect.top + rect.height * 0.55;
-    const bandBottom = rect.bottom;
+    const region = getSubtitleAcceptanceRegion(video);
     if (
-      clientX >= rect.left - padding &&
-      clientX <= rect.right + padding &&
-      clientY >= bandTop - padding &&
-      clientY <= bandBottom + padding
+      clientX >= region.left - padding &&
+      clientX <= region.right + padding &&
+      clientY >= region.top - padding &&
+      clientY <= region.bottom + padding
     ) {
       return true;
     }
@@ -173,7 +171,7 @@ export function handleInteractiveMouseMove(
 ): void {
   if (state.isSelecting || state.settings.triggerMode !== 'hover') return;
   if (!state.activeContainerEl && !state.tooltipState && !state.hoveredWordRect && !state.virtualSelectionHit) return;
-  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28) && !state.tooltipState && !state.hoveredWordRect) return;
+  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28) && !state.tooltipState && !state.hoveredWordRect && !isOverActiveContainer(state, e)) return;
 
   const activeRect = state.activeContainerEl?.getBoundingClientRect();
   const activeContainsPointer = !!activeRect &&
@@ -238,7 +236,7 @@ export function handleInteractiveClick(
 ): void {
   if (state.isSelecting || state.settings.triggerMode !== 'click') return;
   if (!state.activeContainerEl && !state.virtualSelectionHit) return;
-  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28)) return;
+  if (!isPointerNearSubtitleBand(e.clientX, e.clientY, 28) && !isOverActiveContainer(state, e)) return;
 
   const activeRect = state.activeContainerEl?.getBoundingClientRect();
   const activeContainsPointer = !!activeRect &&

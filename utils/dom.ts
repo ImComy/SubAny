@@ -1,6 +1,4 @@
-// utils/dom.ts
-
-import { isSubtitleText } from './text';
+import { isSubtitleText, normalizeSubtitleText } from './text';
 
 export function getDomDepth(el: Node): number {
   let depth = 0;
@@ -287,16 +285,65 @@ function isInteractiveControl(el: HTMLElement): boolean {
 }
 
 /**
+ * Returns the effective acceptance region of a video, expanding its bounding
+ * rect to encompass its immediate player shell (e.g. letterboxing borders,
+ * controls margin) with forgiving padding.
+ */
+export function getSubtitleAcceptanceRegion(video: HTMLVideoElement): DOMRect {
+  const vr = video.getBoundingClientRect();
+  if (vr.width <= 0 || vr.height <= 0) return vr;
+
+  const shell = video.parentElement?.parentElement ?? video.parentElement;
+  if (shell && shell !== document.body && shell !== document.documentElement) {
+    const sr = shell.getBoundingClientRect();
+    if (
+      sr.width > 0 &&
+      sr.height > 0 &&
+      sr.width <= window.innerWidth * 1.05 &&
+      sr.height <= window.innerHeight * 1.05
+    ) {
+      const left = Math.min(vr.left, sr.left);
+      const right = Math.max(vr.right, sr.right);
+      const top = Math.min(vr.top, sr.top);
+      const bottom = Math.max(vr.bottom, sr.bottom);
+      if (
+        right - left <= Math.max(vr.width * 1.5, vr.width + 120) &&
+        bottom - top <= Math.max(vr.height * 1.5, vr.height + 140)
+      ) {
+        return new DOMRect(left - 24, top - 24, (right - left) + 48, (bottom - top) + 48);
+      }
+    }
+  }
+
+  return new DOMRect(vr.left - 24, vr.top - 24, vr.width + 48, vr.height + 48);
+}
+
+/**
+ * Shadow-DOM aware node containment check.
+ */
+export function composedContains(root: Node, child: Node | null): boolean {
+  let curr: Node | null = child;
+  while (curr) {
+    if (curr === root) return true;
+    if (curr instanceof ShadowRoot) {
+      curr = curr.host;
+    } else {
+      curr = curr.parentNode;
+    }
+  }
+  return false;
+}
+
+/**
  * Locate the video element associated with a click point.
  *
  * Preferred path: walk up from `clickTarget` looking for a `<video>` (either
  * the target itself or a descendant). This works when the user's click has
  * already been captured by the player's own listeners.
  *
- * Fallback: hit-test the video list by rect. This works when the click target
- * is unknown (e.g. called from a mousemove handler).
+ * Fallback: hit-test the video list by acceptance region.
  */
-function findVideoAtPoint(
+export function findVideoAtPoint(
   clientX: number,
   clientY: number,
   clickTarget?: HTMLElement | null,
@@ -316,14 +363,14 @@ function findVideoAtPoint(
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
   return (
     videos.find((v) => {
-      const r = v.getBoundingClientRect();
+      const region = getSubtitleAcceptanceRegion(v);
       return (
-        r.width > 0 &&
-        r.height > 0 &&
-        clientX >= r.left &&
-        clientX <= r.right &&
-        clientY >= r.top &&
-        clientY <= r.bottom
+        region.width > 0 &&
+        region.height > 0 &&
+        clientX >= region.left &&
+        clientX <= region.right &&
+        clientY >= region.top &&
+        clientY <= region.bottom
       );
     }) ?? null
   );
@@ -335,25 +382,21 @@ function findVideoAtPoint(
  *
  * Both the `elementsFromPoint` hit-stack and the geometric walk apply this
  * exact rule set, so the two paths cannot disagree about what counts as a
- * subtitle. When they diverge, one path silently returns player chrome while
- * the other returns the caption — which is exactly the bug that motivated
- * extracting this predicate in the first place.
+ * subtitle.
  *
  * Rules:
  *   - Never our own UI.
  *   - Never a blacklisted tag (video, script, controls, etc.).
  *   - Never an interactive control or a descendant of one.
  *   - Must have non-zero size.
- *   - Must not be a player wrapper: reject elements that occupy nearly the
- *     whole video. This is what catches `.videasy-container`,
- *     `.html5-video-player`, and similar containers whose `textContent`
- *     happens to include the caption plus hidden control labels.
- *   - Must be inside the video's lower portion. Very permissive (top 15% is
- *     excluded) — enough to reject title bars, generous enough for any real
- *     caption position.
+ *   - Must not be a player wrapper.
  *   - Must carry plausible subtitle text by length and character set.
  */
-function isPlausibleSubtitleLeaf(el: HTMLElement, videoRect: DOMRect | null): boolean {
+export function isPlausibleSubtitleLeaf(
+  el: HTMLElement,
+  videoRect: DOMRect | null,
+  options?: { allowTop?: boolean },
+): boolean {
   if (isExtensionElement(el)) return false;
 
   const tag = el.tagName.toLowerCase();
@@ -365,18 +408,19 @@ function isPlausibleSubtitleLeaf(el: HTMLElement, videoRect: DOMRect | null): bo
   if (r.width <= 0 || r.height <= 0) return false;
 
   if (videoRect && videoRect.width > 0 && videoRect.height > 0) {
-    // Reject player wrappers. An element wider than 95% of the video AND
+    // Reject full-width player wrappers. An element wider than 95% of the video AND
     // taller than 15% of it is container chrome, not a caption.
     if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) {
       return false;
     }
 
-    // Reject the top chrome band. centerY (not top) is used so that a
-    // caption whose top edge is high but whose text sits lower still
-    // passes — the earlier `r.top` version rejected captions anchored at
-    // bottom-40 on short players.
-    const centerY = r.top + r.height / 2;
-    if (centerY < videoRect.top + videoRect.height * 0.15) return false;
+    // Only gate top chrome when allowTop is explicitly false (e.g. unassisted auto-detect).
+    // On click/hover paths, allowTop defaults to true so captions anywhere on the video
+    // (including Japanese anime, dialogue above graphics, top-third text) are recognized.
+    if (options?.allowTop === false) {
+      const centerY = r.top + r.height / 2;
+      if (centerY < videoRect.top + videoRect.height * 0.15) return false;
+    }
   }
 
   const text = (el.textContent ?? '').trim();
@@ -384,6 +428,109 @@ function isPlausibleSubtitleLeaf(el: HTMLElement, videoRect: DOMRect | null): bo
   if (!isSubtitleText(text)) return false;
 
   return true;
+}
+
+/**
+ * Measures the on-screen glyph bounds of all non-UI text nodes inside root.
+ */
+export function measureGlyphBounds(root: Element): DOMRect | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const text = node.nodeValue ?? '';
+      if (!text.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = (node as Text).parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (isInteractiveControl(parent)) return NodeFilter.FILTER_REJECT;
+      if (isExtensionElement(parent)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let minL = Infinity;
+  let minT = Infinity;
+  let maxR = -Infinity;
+  let maxB = -Infinity;
+  let found = false;
+
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    for (const r of Array.from(range.getClientRects())) {
+      if (r.width <= 0 && r.height <= 0) continue;
+      if (r.left < minL) minL = r.left;
+      if (r.top < minT) minT = r.top;
+      if (r.right > maxR) maxR = r.right;
+      if (r.bottom > maxB) maxB = r.bottom;
+      found = true;
+    }
+  }
+
+  if (!found) return null;
+  return new DOMRect(minL, minT, maxR - minL, maxB - minT);
+}
+
+const MAX_WRAPPER_SLACK_PX = 40;
+
+/**
+ * Walk up from an inner word span or formatting leaf to the enclosing caption
+ * line / sentence container if the parent groups multiple inline tokens into
+ * a single cohesive subtitle line (e.g. Test 4, YouTube caption segments).
+ */
+export function resolveCaptionLineContainer(
+  el: HTMLElement,
+  videoRect?: DOMRect | null,
+): HTMLElement {
+  let current: HTMLElement = el;
+
+  for (let i = 0; i < 4; i++) {
+    const parent = current.parentElement;
+    if (!parent) break;
+    if (parent === document.body || parent === document.documentElement) break;
+    if (parent.tagName.toLowerCase() === 'video') break;
+    if (isExtensionElement(parent)) break;
+    if (isInteractiveControl(parent)) break;
+    if (parent.classList.contains('html5-video-player') || parent.classList.contains('video-stream')) break;
+
+    const parentRect = parent.getBoundingClientRect();
+    if (parentRect.width <= 0 || parentRect.height <= 0) break;
+
+    if (videoRect) {
+      if (parentRect.width > videoRect.width * 0.98) break;
+      if (parentRect.width > videoRect.width * 0.90 && parentRect.height > videoRect.height * 0.15) break;
+    }
+
+    const parentText = normalizeSubtitleText(parent.textContent ?? '');
+    if (parentText.length > 400 || !isSubtitleText(parentText)) {
+      break;
+    }
+
+    const isInline =
+      parent.tagName.toLowerCase() === 'span' ||
+      (typeof window !== 'undefined' &&
+        window.getComputedStyle(parent).display.includes('inline'));
+
+    const isExplicitLine =
+      /(caption-text|captions-text|caption-line|cue-line|cue-container|ytp-caption-segment)/i.test(
+        typeof parent.className === 'string' ? parent.className : '',
+      );
+
+    const hasSiblingTokens = parent.childNodes.length > 1;
+
+    if (isInline || isExplicitLine || hasSiblingTokens) {
+      const tb = measureGlyphBounds(parent);
+      // Only non-inline block/flex wrappers can stretch across the screen (e.g. 800px full-width bar).
+      // If a non-inline parent stretches far wider than its text glyphs, it is layout chrome, not the caption line.
+      if (!isInline && tb && parentRect.width - tb.width > MAX_WRAPPER_SLACK_PX) {
+        break;
+      }
+      current = parent;
+    } else {
+      break;
+    }
+  }
+
+  return current;
 }
 
 /**
@@ -432,7 +579,8 @@ export function getSubtitleElementAtPoint(
 
   for (const el of stack) {
     if (!isPlausibleSubtitleLeaf(el, vr)) continue;
-    return getPreferredSubtitleLeaf(el);
+    const leaf = getPreferredSubtitleLeaf(el);
+    return resolveCaptionLineContainer(leaf, vr);
   }
 
   // ---- Path B: geometric walk ----
@@ -477,7 +625,11 @@ export function getSubtitleElementAtPoint(
     }
   }
 
-  return best ? getPreferredSubtitleLeaf(best) : null;
+  if (best) {
+    const leaf = getPreferredSubtitleLeaf(best);
+    return resolveCaptionLineContainer(leaf, vr);
+  }
+  return null;
 }
 
 export function resolvePlayerContainer(element: HTMLElement): HTMLElement | null {

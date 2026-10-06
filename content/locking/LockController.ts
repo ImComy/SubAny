@@ -3,7 +3,7 @@
 import type { ContentState } from '../state/ContentState';
 import type { SubtitleManager } from '../../lib/SubtitleManager.ts';
 import type { DomTextSwapper } from '../replacement/DomTextSwapper';
-import { generateUniqueSelector, getVideoForElement } from '../../utils/dom';
+import { generateUniqueSelector, getVideoForElement, resolveCaptionLineContainer } from '../../utils/dom';
 import { makeAutoRegionKey } from '../autodetect/AutoRegionKey';
 import { isValidSelectionTarget } from './LockedAnchor';
 import {
@@ -71,7 +71,8 @@ export class LockController {
 
     const videoForElement = getVideoForElement(element);
     const videoRect = videoForElement?.getBoundingClientRect() ?? null;
-    const container = resolveStableContainer(element, videoRect);
+    const lineTarget = resolveCaptionLineContainer(element, videoRect);
+    const container = resolveStableContainer(lineTarget, videoRect);
     console.log('[SubAny] LOCKED container:', container.className, 'rect:', JSON.stringify(container.getBoundingClientRect()));
 
     if (!isValidSelectionTarget(container, videoRect)) return;

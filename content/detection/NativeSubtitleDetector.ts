@@ -1,7 +1,7 @@
 // detection/NativeSubtitleDetector.ts
 
 import { cueToPlainText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
-import { getVideoSubtitleRect, isPointInRectWithPadding } from '../../utils/dom';
+import { getSubtitleAcceptanceRegion, getVideoSubtitleRect, isPointInRectWithPadding } from '../../utils/dom';
 
 export interface NativeSubtitleHit {
   text: string;
@@ -136,7 +136,7 @@ export function findNativeWordAtPoint(
   const totalWidth = context.measureText(line).width;
   const lineLeft = hit.rect.left + (hit.rect.width - totalWidth) / 2;
 
-  for (const match of line.matchAll(/[\p{L}\p{N}\p{M}'-]+/gu)) {
+  for (const match of line.matchAll(/[\p{L}\p{N}\p{M}\u200C\u200D'-]+/gu)) {
     const word = match[0];
     const start = context.measureText(line.slice(0, match.index ?? 0)).width;
     const width = context.measureText(word).width;
@@ -201,11 +201,15 @@ export function findActiveNativeSubtitleForVideo(
 export function isLikelySubtitleZone(clientX: number, clientY: number): HTMLVideoElement | null {
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
   for (const video of videos) {
-    const rect = video.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    const xInside = clientX >= rect.left && clientX <= rect.right;
-    const yRatio = (clientY - rect.top) / rect.height;
-    if (xInside && yRatio >= 0.62 && yRatio <= 0.97) return video;
+    const region = getSubtitleAcceptanceRegion(video);
+    if (
+      clientX >= region.left &&
+      clientX <= region.right &&
+      clientY >= region.top &&
+      clientY <= region.bottom
+    ) {
+      return video;
+    }
   }
   return null;
 }

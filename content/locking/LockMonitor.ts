@@ -2,7 +2,7 @@
 
 import type { ContentState } from '../state/ContentState';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
-import { getVideoForElement } from '../../utils/dom';
+import { getVideoForElement, resolveCaptionLineContainer } from '../../utils/dom';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -131,17 +131,25 @@ function containsInteractiveControls(el: HTMLElement): boolean {
  */
 function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
   if (!el) return false;
-  if (!document.documentElement.contains(el)) return false;
+  if (!document.documentElement.contains(el)) {
+    let curr: Node | null = el;
+    let connected = false;
+    while (curr) {
+      if (curr === document.documentElement) { connected = true; break; }
+      curr = curr instanceof ShadowRoot ? curr.host : curr.parentNode;
+    }
+    if (!connected) return false;
+  }
   if (isExtensionElement(el)) return false;
   if (containsInteractiveControls(el)) return false;
 
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return false;
-
   const text = normalizeSubtitleText(el.textContent ?? '');
-  if (text.length === 0) return true; // between cues
+  if (text.length === 0) return true; // between cues (inline span may collapse to 0x0)
   if (text.length > 400) return false;
   if (!isSubtitleText(text)) return false;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
 
   const tb = textBounds(el);
   if (tb && rect.width - tb.width > MAX_WRAPPER_SLACK_PX) return false;
@@ -162,13 +170,18 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
   const r = el.getBoundingClientRect();
   if (r.width <= 0 || r.height <= 0) return false;
 
+  // Must be in or near the video bounding box (rejects other players or off-screen elements)
+  if (
+    r.right < videoRect.left - 40 ||
+    r.left > videoRect.right + 40 ||
+    r.bottom < videoRect.top - 40 ||
+    r.top > videoRect.bottom + 40
+  ) {
+    return false;
+  }
+
   // Reject player wrappers.
   if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) return false;
-
-  // Reject the top chrome band. `centerY`, not `top`, so captions whose top
-  // edge is high but whose text sits lower still pass.
-  const centerY = r.top + r.height / 2;
-  if (centerY < videoRect.top + videoRect.height * 0.15) return false;
 
   // Must contain plausible subtitle text.
   const text = normalizeSubtitleText(el.textContent ?? '');
@@ -190,22 +203,17 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
  * Walk up from a clicked subtitle leaf to the tightest element that still
  * contains only the caption.
  *
- * The invariant: a caption leaf is an inline element whose box hugs its
- * glyphs. The first ancestor that is materially wider than the element we
- * are currently on (by more than MAX_WRAPPER_SLACK_PX) is a block-level
- * wrapper — it fills its parent by layout, not by content — and must not
- * be used as the visual target, because its `getBoundingClientRect()` will
- * return the wrapper width, not the caption width.
- *
- * This is the difference between `width: 130px` (correct) and
- * `width: 556px` (the wrapper).
+ * Checks if the ancestor hugs its rendered text glyphs (textBounds)
+ * rather than comparing single-child width to parent width (which would
+ * prematurely break on multi-span captions).
  */
 export function resolveStableContainer(
   clickedElement: HTMLElement,
   videoRect: DOMRect | null,
 ): HTMLElement {
-  let current: HTMLElement = clickedElement;
-  let best: HTMLElement = clickedElement;
+  const lineTarget = resolveCaptionLineContainer(clickedElement, videoRect);
+  let current: HTMLElement = lineTarget;
+  let best: HTMLElement = lineTarget;
 
   for (let i = 0; i < 6; i++) {
     const parent = current.parentElement;
@@ -228,10 +236,13 @@ export function resolveStableContainer(
     const parentRect = parent.getBoundingClientRect();
     const currentRect = current.getBoundingClientRect();
 
-    // The decisive test. Stop the moment the ancestor is materially wider
-    // than the element we are on. This is what keeps the dashed border
-    // tight on players that wrap a centered caption in a full-width block.
-    if (parentRect.width - currentRect.width > MAX_WRAPPER_SLACK_PX) break;
+    // Check whether the parent hugs its text contents.
+    const tb = textBounds(parent);
+    if (tb && parentRect.width - tb.width > MAX_WRAPPER_SLACK_PX) {
+      break;
+    } else if (!tb && parentRect.width - currentRect.width > MAX_WRAPPER_SLACK_PX) {
+      break;
+    }
 
     if (videoRect) {
       if (parentRect.width > videoRect.width * 0.98) break;
@@ -330,7 +341,7 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
     }
   }
 
-  return best;
+  return best ? resolveCaptionLineContainer(best, vr) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,20 +423,30 @@ function startPositionTracking(state: ContentState): void {
   lastPositionKey = '';
 
   const tick = (): void => {
-    const el = state.activeContainerEl;
-    if (!el) {
+    // Only stop if the lock has been cleared/cancelled.
+    if (!state.lockedContainerObserver && !state.settings.lockedSelector) {
       positionRafId = 0;
       return;
     }
 
-    const r = el.getBoundingClientRect();
-    const key =
-      `${r.left.toFixed(1)}:${r.top.toFixed(1)}:` +
-      `${r.width.toFixed(1)}:${r.height.toFixed(1)}`;
+    let el = state.activeContainerEl;
+    if (!el || !el.isConnected) {
+      el = tryResolveFromSelector(state);
+      if (el) state.activeContainerEl = el;
+    }
 
-    if (key !== lastPositionKey) {
-      lastPositionKey = key;
-      state.notify();
+    if (el && el.isConnected) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        const key =
+          `${r.left.toFixed(1)}:${r.top.toFixed(1)}:` +
+          `${r.width.toFixed(1)}:${r.height.toFixed(1)}`;
+
+        if (key !== lastPositionKey) {
+          lastPositionKey = key;
+          state.notify();
+        }
+      }
     }
 
     positionRafId = requestAnimationFrame(tick);
@@ -580,6 +601,9 @@ export function startLockedMonitor(
     // Real cue. Reposition the box immediately, then hand off to the
     // translation pipeline (no-op in hover/click modes, translation in
     // full-auto / replace-native modes).
+    if (!positionRafId) {
+      startPositionTracking(state);
+    }
     state.notify();
     if (onTextChange) onTextChange(text);
   });

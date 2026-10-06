@@ -25,18 +25,17 @@ let lastHitKey = '';
 let lastHitResult: UniversalHit = EMPTY_HIT;
 let lastHitAt = 0;
 
+import { getSubtitleAcceptanceRegion } from '../../utils/dom';
+
 function isInSubtitleBand(clientX: number, clientY: number): boolean {
   const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
   for (const video of videos) {
-    const rect = video.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    const top = rect.top + rect.height * 0.55;
-    const bottom = rect.bottom;
+    const region = getSubtitleAcceptanceRegion(video);
     if (
-      clientX >= rect.left - 24 &&
-      clientX <= rect.right + 24 &&
-      clientY >= top - 24 &&
-      clientY <= bottom + 24
+      clientX >= region.left &&
+      clientX <= region.right &&
+      clientY >= region.top &&
+      clientY <= region.bottom
     ) {
       return true;
     }

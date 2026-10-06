@@ -1,6 +1,5 @@
 // detection/SubtitleGrouping.ts
 
-import { getAllElements } from '../../utils/dom';
 import { getLowestCommonHTMLElement } from '../../utils/dom';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
 import { isPlayerControlRegion } from './CandidateScorer';
@@ -75,8 +74,17 @@ export function canBelongToSubtitleGroup(
     if (fontRatio > 1.7) return false;
   }
 
+  // 1. Same-line adjacent tokens (e.g. multi-span words / segments)
+  const verticalOverlap = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  const minHeight = Math.min(a.height, b.height);
+  if (minHeight > 0 && verticalOverlap >= minHeight * 0.45) {
+    return horizontalGap <= Math.max(50, (aFont || 16) * 2.5);
+  }
+
+  // 2. Centered multi-line captions
   if (aStyle.textAlign === bStyle.textAlign && aStyle.textAlign === 'center') return true;
 
+  // 3. Stacked lines with horizontal overlap
   const horizontalOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
   return horizontalOverlap >= Math.min(a.width, b.width) * 0.18;
 }
@@ -84,10 +92,30 @@ export function canBelongToSubtitleGroup(
 export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | null): HTMLElement {
   if (!isUsableSubtitleLine(anchor, videoRect)) return anchor;
 
-  const allElements = getAllElements(document);
+  const candidatePool: HTMLElement[] = [];
+  const parent = anchor.parentElement;
+  if (parent && parent !== document.body && parent !== document.documentElement) {
+    for (let i = 0; i < parent.children.length; i++) {
+      const child = parent.children[i] as HTMLElement;
+      if (child !== anchor) candidatePool.push(child);
+    }
+    const grandParent = parent.parentElement;
+    if (grandParent && grandParent !== document.body && grandParent !== document.documentElement) {
+      for (let i = 0; i < grandParent.children.length; i++) {
+        const sibling = grandParent.children[i] as HTMLElement;
+        if (sibling !== parent) {
+          candidatePool.push(sibling);
+          for (let j = 0; j < sibling.children.length; j++) {
+            candidatePool.push(sibling.children[j] as HTMLElement);
+          }
+        }
+      }
+    }
+  }
+
   const related: HTMLElement[] = [anchor];
 
-  for (const candidate of allElements) {
+  for (const candidate of candidatePool) {
     if (related.length >= 8) break;
     if (canBelongToSubtitleGroup(anchor, candidate, videoRect)) related.push(candidate);
   }
@@ -127,7 +155,9 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
   const expectedText = normalizeSubtitleText(related.map((el) => el.textContent || '').join(' '));
   const actualText = normalizeSubtitleText(group.textContent || '');
 
-  if (!expectedText || actualText !== expectedText) return anchor;
+  const expectedChars = expectedText.replace(/\s+/g, '');
+  const actualChars = actualText.replace(/\s+/g, '');
+  if (!expectedChars || actualChars !== expectedChars) return anchor;
   if (!isSubtitleText(actualText)) return anchor;
 
   const groupRect = group.getBoundingClientRect();

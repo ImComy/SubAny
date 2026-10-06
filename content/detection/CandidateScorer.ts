@@ -170,17 +170,25 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
   if (/[.!?…]/.test(text)) { score += 5; reasons.push('punctuation'); }
   if (/^[A-ZÀ-Ö]/.test(text)) { score += 3; reasons.push('capitalized'); }
 
-  // 9. Leaf detection
+  // 9. Leaf / line detection
   const childNodes = Array.from(el.childNodes);
   const hasOnlyTextOrBr = childNodes.every(
     (node) => node.nodeType === Node.TEXT_NODE || (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR')
   );
+  const isInlineLine = el.children.length > 0 && Array.from(el.children).every((child) => {
+    const cTag = child.tagName.toLowerCase();
+    return ['span', 'b', 'i', 'em', 'strong', 'mark', 'font', 'ruby', 'rt', 'a', 'br'].includes(cTag);
+  });
+
   if (hasOnlyTextOrBr) { score += 50; reasons.push('leaf-like'); }
   else if (el.children.length === 0) { score += 50; reasons.push('leaf-element'); }
+  else if (isInlineLine) { score += 50; reasons.push('inline-line-container'); }
 
   // 10. Penalty for multiple element children
-  if (el.children.length > 1 && !hasOnlyTextOrBr) { score -= 25; reasons.push('multiple-children'); }
-  else if (el.children.length > 0 && !hasOnlyTextOrBr) { score -= 15; reasons.push('has-children'); }
+  if (!isInlineLine) {
+    if (el.children.length > 1 && !hasOnlyTextOrBr) { score -= 25; reasons.push('multiple-children'); }
+    else if (el.children.length > 0 && !hasOnlyTextOrBr) { score -= 15; reasons.push('has-children'); }
+  }
 
   // 11. Penalty for pointer-events: none
   if (style.pointerEvents === 'none') { score -= 50; reasons.push('pointer-events-none'); }
@@ -194,7 +202,7 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
     const childText = (child as HTMLElement).textContent?.trim() || '';
     return isSubtitleText(childText) && hasSubtitleClass(child as HTMLElement);
   });
-  if (hasSubtitleChild) { score -= 40; reasons.push('has-subtitle-child'); }
+  if (hasSubtitleChild && !isInlineLine) { score -= 40; reasons.push('has-subtitle-child'); }
 
   return { element: el, score, reasons };
 }

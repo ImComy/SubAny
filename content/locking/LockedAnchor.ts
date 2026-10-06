@@ -83,26 +83,21 @@ export function isHealthyLockedElement(element: HTMLElement | null): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
 
+  const video = getVideoForElement(element);
+
   // A healthy locked element should still look like a subtitle-sized
   // visual object.
   if (rect.width > window.innerWidth * 0.96) return false;
-  if (rect.height > window.innerHeight * 0.30) return false;
+  if (!video && rect.height > window.innerHeight * 0.30) return false;
 
-  const video = getVideoForElement(element);
   if (video) {
     const vr = video.getBoundingClientRect();
     if (vr.width > 0 && vr.height > 0) {
       if (rect.width >= vr.width * 0.96) return false;
       if (rect.height >= vr.height * 0.45) return false;
 
-      // Reject stale selectors that resolve to a player title or other text
-      // overlay near the top of the video. Explicit subtitle presentation
-      // signals remain valid even when a player positions captions unusually.
-      const hasPresentationSignal =
-        hasSubtitleClass(element) || !!getSubtitlePresentationAncestor(element, vr);
-      const centerY = rect.top + rect.height / 2;
-      const yRatio = (centerY - vr.top) / vr.height;
-      if (!hasPresentationSignal && yRatio < 0.55) return false;
+      // Reject elements that have drifted completely outside the video and its player shell
+      if (rect.bottom < vr.top - 40 || rect.top > vr.bottom + 40) return false;
     }
   }
 
@@ -120,19 +115,29 @@ export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect 
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
   if (rect.width > window.innerWidth * 0.96) return false;
-  if (rect.height > window.innerHeight * 0.30) return false;
+  if (!videoRect && rect.height > window.innerHeight * 0.30) return false;
   if (!isSubtitleText(normalizeSubtitleText(element.textContent || ''))) return false;
 
   if (videoRect) {
     if (rect.width >= videoRect.width * 0.96) return false;
     if (rect.height >= videoRect.height * 0.45) return false;
-    if (rect.right < videoRect.left - 30 || rect.left > videoRect.right + 30) return false;
-    if (rect.bottom < videoRect.top - 30 || rect.top > videoRect.bottom + 30) return false;
+    if (rect.right < videoRect.left - 40 || rect.left > videoRect.right + 40) return false;
+    if (rect.bottom < videoRect.top - 40 || rect.top > videoRect.bottom + 40) return false;
   }
 
   return true;
 }
 
 export function isLockedElementConnected(element: HTMLElement | null): boolean {
-  return !!element && document.documentElement.contains(element);
+  if (!element) return false;
+  let curr: Node | null = element;
+  while (curr) {
+    if (curr === document.documentElement) return true;
+    if (curr instanceof ShadowRoot) {
+      curr = curr.host;
+    } else {
+      curr = curr.parentNode;
+    }
+  }
+  return false;
 }
