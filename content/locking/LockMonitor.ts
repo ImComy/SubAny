@@ -104,11 +104,11 @@ function textBounds(root: Element): DOMRect | null {
 // Predicates
 // ---------------------------------------------------------------------------
 
-function isExtensionElement(el: HTMLElement): boolean {
+function isExtensionElement(el: Element): boolean {
   return el.id === 'subany-extension-root' || !!el.id?.startsWith('subany-');
 }
 
-function containsInteractiveControls(el: HTMLElement): boolean {
+function containsInteractiveControls(el: Element): boolean {
   return el.querySelector(CONTROL_SELECTOR) !== null;
 }
 
@@ -129,14 +129,14 @@ function containsInteractiveControls(el: HTMLElement): boolean {
  * Check #5 is the one that keeps the dashed border tight on players that
  * wrap a small centered caption in a full-width block.
  */
-function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
+function isPlausibleCaptionContainer(el: HTMLElement | SVGElement | null): boolean {
   if (!el || !el.isConnected) return false;
   if (isExtensionElement(el)) return false;
   if (containsInteractiveControls(el)) return false;
 
   const text = normalizeSubtitleText(el.textContent ?? '');
   if (text.length === 0) return true; // between cues (inline span may collapse to 0x0)
-  if (text.length > 400) return false;
+  if (text.length > 1200) return false;
   if (!isSubtitleText(text)) return false;
 
   const rect = el.getBoundingClientRect();
@@ -165,7 +165,7 @@ function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
  * A stricter check used only during the recovery scan. The scan is looking
  * for a caption that is *currently visible*, so empty text disqualifies.
  */
-function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
+function isLiveCaptionCandidate(el: HTMLElement | SVGElement, videoRect: DOMRect): boolean {
   if (isExtensionElement(el)) return false;
   const tag = el.tagName.toLowerCase();
   if (SKIP_TAGS.has(tag)) return false;
@@ -186,15 +186,16 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
 
   // Must contain plausible subtitle text.
   const text = normalizeSubtitleText(el.textContent ?? '');
-  if (text.length < 2 || text.length > 400) return false;
+  if (text.length < 2 || text.length > 1200) return false;
   if (!isSubtitleText(text)) return false;
 
   // Reject player wrappers/layers (full video size).
   const tb = textBounds(el);
   const contentWidth = tb ? tb.width : r.width;
   const contentHeight = tb ? tb.height : r.height;
-  if (contentWidth > videoRect.width * 0.95 && contentHeight > videoRect.height * 0.35) return false;
-  if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.45) return false;
+  const maxContentHeight = Math.max(320, videoRect.height * 0.75);
+  if (contentWidth > videoRect.width * 0.99 && contentHeight > maxContentHeight) return false;
+  if (r.width > videoRect.width * 0.99 && r.height > videoRect.height * 0.85) return false;
 
   // Reject full-width block wrappers that only *contain* the caption,
   // BUT do not reject legitimate multi-line containers whose children
@@ -230,22 +231,25 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
  * prematurely break on multi-span captions).
  */
 export function resolveStableContainer(
-  clickedElement: HTMLElement,
+  clickedElement: HTMLElement | SVGElement,
   videoRect: DOMRect | null,
-): HTMLElement {
+): HTMLElement | SVGElement {
   const lineTarget = resolveCaptionLineContainer(clickedElement, videoRect);
   const groupTarget = combineSubtitleLines(lineTarget, videoRect);
-  let current: HTMLElement = groupTarget;
-  let best: HTMLElement = groupTarget;
+  if (groupTarget instanceof SVGElement || groupTarget.tagName.toLowerCase() === 'text') {
+    return groupTarget;
+  }
+  let current: HTMLElement | SVGElement = groupTarget;
+  let best: HTMLElement | SVGElement = groupTarget;
   for (let i = 0; i < 6; i++) {
-    const parent = current.parentElement;
+    const parent: HTMLElement | SVGElement | null = current.parentElement;
     if (!parent) break;
-    const ownerDoc = parent.ownerDocument || document;
+    const ownerDoc: Document = parent.ownerDocument || document;
     if (parent === ownerDoc.body || parent === ownerDoc.documentElement) break;
     if (parent.tagName.toLowerCase() === 'video') break;
     if (parent.classList.contains('html5-video-player') || parent.classList.contains('video-stream')) break;
     if (parent.matches('video, button, input, [role="button"], [role="slider"]')) break;
-    if (containsInteractiveControls(parent)) break;
+    if (containsInteractiveControls(parent as HTMLElement)) break;
 
     // Explicit caption-window class: trust it even if it is wide. This is
     // the player telling us "this element is the caption surface", which
@@ -283,9 +287,9 @@ export function resolveStableContainer(
     if (videoRect) {
       const contentWidth = tb ? tb.width : parentRect.width;
       const contentHeight = tb ? tb.height : parentRect.height;
-      if (contentWidth > videoRect.width * 0.95) break;
-      if (contentHeight > videoRect.height * 0.40) break;
-      if (parentRect.height > videoRect.height * 0.45 && parentRect.width > videoRect.width * 0.90) break;
+      if (contentWidth > videoRect.width * 0.98) break;
+      if (contentHeight > Math.max(320, videoRect.height * 0.75)) break;
+      if (parentRect.height > videoRect.height * 0.85 && parentRect.width > videoRect.width * 0.95) break;
     }
 
     best = parent;
@@ -337,7 +341,7 @@ function findObservedVideo(state: ContentState): HTMLVideoElement | null {
  * runs at most once per SCAN_COOLDOWN_MS, and only when the cheap selector
  * re-resolution has already failed.
  */
-function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
+function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | SVGElement | null {
   const vr = video.getBoundingClientRect();
   if (vr.width <= 0 || vr.height <= 0) return null;
 
@@ -345,9 +349,9 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
   const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!scope) return null;
 
-  let best: HTMLElement | null = null;
+  let best: HTMLElement | SVGElement | null = null;
   let bestArea = Infinity;
-  const stack: HTMLElement[] = [scope];
+  const stack: (HTMLElement | SVGElement)[] = [scope];
   let visited = 0;
   const MAX_VISITS = 400;
 
@@ -363,13 +367,16 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
     // Descend unconditionally — the caption might live inside a wrapper
     // that fails the size cap.
     for (let i = el.children.length - 1; i >= 0; i--) {
-      stack.push(el.children[i] as HTMLElement);
+      const ch = el.children[i];
+      if (ch instanceof HTMLElement || ch instanceof SVGElement) {
+        stack.push(ch);
+      }
     }
 
     // Free filter: skip anything whose text can't be a subtitle before
     // touching geometry.
     const text = normalizeSubtitleText(el.textContent ?? '');
-    if (text.length < 2 || text.length > 400) continue;
+    if (text.length < 2 || text.length > 1200) continue;
     if (!isSubtitleText(text)) continue;
 
     if (!isLiveCaptionCandidate(el, vr)) continue;
@@ -398,16 +405,16 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
  * when they do, this recovers the container within the same mutation
  * delivery, so even very short cues are tracked for their full duration.
  */
-function tryResolveFromSelector(state: ContentState): HTMLElement | null {
+function tryResolveFromSelector(state: ContentState): HTMLElement | SVGElement | null {
   const selector = state.settings.lockedSelector;
   if (!selector) return null;
 
-  let el: HTMLElement | null = null;
+  let el: HTMLElement | SVGElement | null = null;
   const doc = state.activeContainerEl?.ownerDocument ?? findObservedVideo(state)?.ownerDocument ?? document;
   try {
-    el = doc.querySelector(selector) as HTMLElement | null;
+    el = doc.querySelector(selector) as HTMLElement | SVGElement | null;
     if (!el && doc !== document) {
-      el = document.querySelector(selector) as HTMLElement | null;
+      el = document.querySelector(selector) as HTMLElement | SVGElement | null;
     }
   } catch (_) {
     return null;
@@ -418,13 +425,13 @@ function tryResolveFromSelector(state: ContentState): HTMLElement | null {
     const root = (video?.getRootNode() ?? state.activeContainerEl?.getRootNode()) as ShadowRoot | Document | null;
     if (root && root !== document && typeof root.querySelector === 'function') {
       try {
-        el = root.querySelector(selector) as HTMLElement | null;
+        el = root.querySelector(selector) as HTMLElement | SVGElement | null;
       } catch (_) {}
     }
     if (!el) {
       for (const sr of getKnownShadowRoots()) {
         try {
-          el = sr.querySelector(selector) as HTMLElement | null;
+          el = sr.querySelector(selector) as HTMLElement | SVGElement | null;
           if (el) break;
         } catch (_) {}
       }
@@ -444,7 +451,7 @@ function tryResolveFromSelector(state: ContentState): HTMLElement | null {
  * One repair pass. Tries the current container first, then the stored
  * selector, then a bounded scan of the video subtree.
  */
-function recoverCaption(state: ContentState): HTMLElement | null {
+function recoverCaption(state: ContentState): HTMLElement | SVGElement | null {
   if (isPlausibleCaptionContainer(state.activeContainerEl)) {
     return state.activeContainerEl;
   }
@@ -698,7 +705,7 @@ export function startLockedMonitor(
 export function reattachLockedContainer(
   state: ContentState,
   onTextChange?: (text: string) => void,
-): HTMLElement | null {
+): HTMLElement | SVGElement | null {
   maintainLockedContainer(state, onTextChange);
   return state.activeContainerEl;
 }

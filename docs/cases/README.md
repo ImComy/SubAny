@@ -27,6 +27,7 @@ fix attempt — see **Misfiled cases** below.
 | [021](./021-transform-motion-tracking-stall.md) | Transform motion tracking stopped after empty cue gap until hover | Lifecycle | Fixed | All |
 | [022](./022-multi-line-block-captions.md) | Multi-line and dual-subtitle block containers isolated to single line | Grouping & Locking | Fixed | All |
 | [023](./023-shadow-dom-and-iframe-captions.md) | Captions inside Shadow DOM and iframes not selected or tracked | Detection & Environment | Fixed | Shadow DOM, iframes, all |
+| [024](./024-long-captions-and-svg-text-selection.md) | Very long multi-line captions and SVG text overlays fail selection and locking | Detection, Selection & Locking | Fixed | All |
 
 Numbers 017 and 018 are retired. They were fix attempts during the
 diagnosis of case 016 that were mislabelled as their own cases. Their

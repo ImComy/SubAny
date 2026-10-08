@@ -4,30 +4,30 @@ import { normalizeSubtitleText, isSubtitleText, isPlaybackTimeText } from '../..
 import { getDomDepth, measureGlyphBounds } from '../../utils/dom';
 
 export interface CandidateScore {
-  element: HTMLElement;
+  element: HTMLElement | SVGElement;
   score: number;
   reasons: string[];
 }
 
-export function hasSubtitleClass(el: HTMLElement): boolean {
+export function hasSubtitleClass(el: HTMLElement | SVGElement): boolean {
   const id = el.id || '';
   const cls = (el.className || '').toString();
   return /(subtitle|sub|captions|cc|cue|translation|track|vtt|timed-text|player-caption)/i.test(id + cls);
 }
 
-export function getInteractiveControlCount(el: HTMLElement): number {
+export function getInteractiveControlCount(el: Element): number {
   return el.querySelectorAll(
     'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]'
   ).length;
 }
 
-export function isDirectInteractiveElement(el: HTMLElement): boolean {
+export function isDirectInteractiveElement(el: Element): boolean {
   return el.matches(
     'button, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]'
   );
 }
 
-export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null = null): boolean {
+export function isPlayerControlRegion(el: HTMLElement | SVGElement, videoRect: DOMRect | null = null): boolean {
   if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return true;
 
   if (isDirectInteractiveElement(el) || el.closest(
@@ -39,7 +39,7 @@ export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null
   const ownText = normalizeSubtitleText(el.textContent ?? '');
   if (isPlaybackTimeText(ownText)) return true;
 
-  let current: HTMLElement | null = el.parentElement;
+  let current: Element | null = el.parentElement;
   const doc = el.ownerDocument || document;
   while (current && current !== doc.body && current !== doc.documentElement) {
     const rect = current.getBoundingClientRect();
@@ -73,9 +73,9 @@ export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null
   return false;
 }
 
-export function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMRect | null): HTMLElement | null {
+export function getSubtitlePresentationAncestor(el: HTMLElement | SVGElement, videoRect: DOMRect | null): HTMLElement | SVGElement | null {
   const doc = el.ownerDocument || document;
-  let current: HTMLElement | null = el.parentElement;
+  let current: Element | null = el.parentElement;
   while (current && current !== doc.body && current !== doc.documentElement) {
     const style = getComputedStyle(current);
     if (style.pointerEvents === 'none' && (style.position === 'absolute' || style.position === 'fixed')) {
@@ -88,7 +88,7 @@ export function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMR
           rect.top <= videoRect.bottom
         )) {
           const controls = getInteractiveControlCount(current);
-          if (controls === 0) return current;
+          if (controls === 0 && (current instanceof HTMLElement || current instanceof SVGElement)) return current;
         }
       }
     }
@@ -97,7 +97,7 @@ export function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMR
   return null;
 }
 
-export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
+export function scoreSubtitleCandidate(el: HTMLElement | SVGElement): CandidateScore | null {
   const text = normalizeSubtitleText(el.textContent ?? '');
   if (!text || !isSubtitleText(text)) return null;
   if (isPlayerControlRegion(el)) return null;

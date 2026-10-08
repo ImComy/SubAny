@@ -210,11 +210,11 @@ export function getDeepestTextContainer(el: HTMLElement): HTMLElement {
  * wrapper is a stable anchor for cue tracking, but the visual selection box must
  * follow the text-bearing leaf instead of the entire wrapper.
  */
-export function getPreferredSubtitleLeaf(el: HTMLElement): HTMLElement {
-  let current: HTMLElement = el;
+export function getPreferredSubtitleLeaf(el: HTMLElement | SVGElement): HTMLElement | SVGElement {
+  let current: HTMLElement | SVGElement = el;
 
   while (current.children.length === 1) {
-    const child = current.children[0] as HTMLElement;
+    const child = current.children[0] as HTMLElement | SVGElement;
     const currentText = (current.textContent ?? '').replace(/\s+/g, ' ').trim();
     const childText = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
 
@@ -232,7 +232,7 @@ export function getPreferredSubtitleLeaf(el: HTMLElement): HTMLElement {
   return current;
 }
 
-export function getVideoContainingElement(element: HTMLElement): HTMLVideoElement | null {
+export function getVideoContainingElement(element: HTMLElement | SVGElement): HTMLVideoElement | null {
   const doc = element.ownerDocument || document;
   const er = element.getBoundingClientRect();
   let best: HTMLVideoElement | null = null;
@@ -253,7 +253,7 @@ export function getVideoContainingElement(element: HTMLElement): HTMLVideoElemen
   return bestOverlap >= 0.20 ? best : null;
 }
 
-export function getVideoForElement(element: HTMLElement): HTMLVideoElement | null {
+export function getVideoForElement(element: Element): HTMLVideoElement | null {
   const root = element.getRootNode();
   if (root instanceof ShadowRoot) {
     const direct = root.querySelector('video') as HTMLVideoElement | null;
@@ -336,7 +336,7 @@ export function getVideoSubtitleRect(video: HTMLVideoElement, cue: TextTrackCue)
   return new DOMRect(left, top, cueWidth, cueHeight);
 }
 
-export function generateUniqueSelector(element: HTMLElement): string {
+export function generateUniqueSelector(element: HTMLElement | SVGElement): string {
   const escape = (value: string): string => {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
     return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
@@ -369,7 +369,7 @@ export function generateUniqueSelector(element: HTMLElement): string {
   }
 
   const path: string[] = [];
-  let current: HTMLElement | null = element;
+  let current: HTMLElement | SVGElement | null = element;
   while (current && current !== doc.body && current !== doc.documentElement) {
     let selector = current.tagName.toLowerCase();
     const subtitleClass = Array.from(current.classList).find((name) =>
@@ -380,7 +380,7 @@ export function generateUniqueSelector(element: HTMLElement): string {
     );
     if (primaryClass) selector += `.${escape(primaryClass)}`;
 
-    const parent: HTMLElement | null = current.parentElement;
+    const parent: HTMLElement | SVGElement | null = current.parentElement;
     if (parent) {
       const siblings = Array.from(parent.children).filter((child: Element) => child.tagName === current!.tagName);
       if (siblings.length > 1 && !subtitleClass) {
@@ -402,21 +402,33 @@ export function generateUniqueSelector(element: HTMLElement): string {
  * Tags that can never be a subtitle text leaf. Skipped before any geometry
  * read to avoid wasting work and to prevent player chrome from ever matching.
  */
-const SKIP_TAGS = new Set([
-  'video', 'audio', 'canvas', 'svg', 'path',
+export const SKIP_TAGS = new Set([
+  'video', 'audio', 'canvas', 'path',
   'button', 'input', 'select', 'textarea',
   'script', 'style', 'noscript', 'link', 'meta', 'head',
   'iframe', 'object', 'embed', 'img', 'picture', 'source', 'track',
   'br', 'hr', 'wbr',
 ]);
 
-function isExtensionElement(el: HTMLElement): boolean {
+function isExtensionElement(el: Element): boolean {
   return el.id === 'subany-extension-root' || !!el.id?.startsWith('subany-');
 }
 
-function isInteractiveControl(el: HTMLElement): boolean {
+function isInteractiveControl(el: Element): boolean {
   if (el.matches('button, [role="button"], [role="slider"], [role="progressbar"], input')) return true;
   if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return true;
+  return false;
+}
+
+export function hasBlockChildren(el: Element): boolean {
+  for (let i = 0; i < el.children.length; i++) {
+    const child = el.children[i];
+    if (!child) continue;
+    const tag = child.tagName.toLowerCase();
+    if (!['span', 'b', 'i', 'em', 'strong', 'small', 'ruby', 'rt', 'rp', 'font', 'tspan', 'wbr', 'br'].includes(tag)) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -537,7 +549,7 @@ export function findVideoAtPoint(
  *   - Must carry plausible subtitle text by length and character set.
  */
 export function isPlausibleSubtitleLeaf(
-  el: HTMLElement,
+  el: HTMLElement | SVGElement,
   videoRect: DOMRect | null,
   options?: { allowTop?: boolean },
 ): boolean {
@@ -545,6 +557,7 @@ export function isPlausibleSubtitleLeaf(
 
   const tag = el.tagName.toLowerCase();
   if (SKIP_TAGS.has(tag)) return false;
+  if (tag === 'svg') return false;
 
   if (isInteractiveControl(el)) return false;
 
@@ -552,9 +565,14 @@ export function isPlausibleSubtitleLeaf(
   if (r.width <= 0 || r.height <= 0) return false;
 
   if (videoRect && videoRect.width > 0 && videoRect.height > 0) {
-    // Reject full-width player wrappers. An element wider than 95% of the video AND
-    // taller than 15% of it is container chrome, not a caption.
-    if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) {
+    // Reject full-width player wrappers with block children. An element wider than 95% of the video AND
+    // taller than 15% of it that has non-inline block children is container chrome, not a caption.
+    if (hasBlockChildren(el) && r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) {
+      return false;
+    }
+
+    // Reject elements that cover nearly the entire player shell
+    if (r.width > videoRect.width * 0.98 && r.height > videoRect.height * 0.85) {
       return false;
     }
 
@@ -568,7 +586,7 @@ export function isPlausibleSubtitleLeaf(
   }
 
   const text = (el.textContent ?? '').trim();
-  if (text.length < 2 || text.length > 400) return false;
+  if (text.length < 2 || text.length > 1200) return false;
   if (!isSubtitleText(text)) return false;
 
   return true;
@@ -578,6 +596,11 @@ export function isPlausibleSubtitleLeaf(
  * Measures the on-screen glyph bounds of all non-UI text nodes inside root.
  */
 export function measureGlyphBounds(root: Element): DOMRect | null {
+  if (root instanceof SVGElement) {
+    const r = root.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return r;
+  }
+
   const doc = root.ownerDocument || document;
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -623,13 +646,13 @@ const MAX_WRAPPER_SLACK_PX = 40;
  * a single cohesive subtitle line (e.g. Test 4, YouTube caption segments).
  */
 export function resolveCaptionLineContainer(
-  el: HTMLElement,
+  el: HTMLElement | SVGElement,
   videoRect?: DOMRect | null,
-): HTMLElement {
-  let current: HTMLElement = el;
+): HTMLElement | SVGElement {
+  let current: HTMLElement | SVGElement = el;
 
   for (let i = 0; i < 4; i++) {
-    const parent = current.parentElement;
+    const parent: HTMLElement | SVGElement | null = current.parentElement;
     if (!parent) break;
     if (parent === document.body || parent === document.documentElement) break;
     if (parent.tagName.toLowerCase() === 'video') break;
@@ -642,11 +665,11 @@ export function resolveCaptionLineContainer(
 
     if (videoRect) {
       if (parentRect.width > videoRect.width * 0.98) break;
-      if (parentRect.width > videoRect.width * 0.90 && parentRect.height > videoRect.height * 0.15) break;
+      if (hasBlockChildren(parent) && parentRect.width > videoRect.width * 0.90 && parentRect.height > videoRect.height * 0.15) break;
     }
 
     const parentText = normalizeSubtitleText(parent.textContent ?? '');
-    if (parentText.length > 400 || !isSubtitleText(parentText)) {
+    if (parentText.length > 1200 || !isSubtitleText(parentText)) {
       break;
     }
 
@@ -710,24 +733,24 @@ export function getComposedElementsFromPoint(
   clientX: number,
   clientY: number,
   targetDoc: Document = document,
-): HTMLElement[] {
-  const elements: HTMLElement[] = [];
+): (HTMLElement | SVGElement)[] {
+  const elements: (HTMLElement | SVGElement)[] = [];
   const topStack = (targetDoc.elementsFromPoint
     ? targetDoc.elementsFromPoint(clientX, clientY)
-    : []) as HTMLElement[];
+    : []) as (HTMLElement | SVGElement)[];
 
   for (const el of topStack) {
     elements.push(el);
     if (el.shadowRoot) {
       knownShadowRoots.add(el.shadowRoot);
       if (typeof el.shadowRoot.elementsFromPoint === 'function') {
-        const shadowStack = el.shadowRoot.elementsFromPoint(clientX, clientY) as HTMLElement[];
+        const shadowStack = el.shadowRoot.elementsFromPoint(clientX, clientY) as (HTMLElement | SVGElement)[];
         for (const sEl of shadowStack) {
           elements.push(sEl);
           if (sEl.shadowRoot) {
             knownShadowRoots.add(sEl.shadowRoot);
             if (typeof sEl.shadowRoot.elementsFromPoint === 'function') {
-              elements.push(...(sEl.shadowRoot.elementsFromPoint(clientX, clientY) as HTMLElement[]));
+              elements.push(...(sEl.shadowRoot.elementsFromPoint(clientX, clientY) as (HTMLElement | SVGElement)[]));
             }
           }
         }
@@ -741,11 +764,11 @@ export function getComposedElementsFromPoint(
 export function getSubtitleElementAtPoint(
   clientX: number,
   clientY: number,
-  clickTarget?: HTMLElement | null,
+  clickTarget?: HTMLElement | SVGElement | null,
   targetDoc?: Document,
-): HTMLElement | null {
+): (HTMLElement | SVGElement) | null {
   const doc = targetDoc ?? clickTarget?.ownerDocument ?? document;
-  const video = findVideoAtPoint(clientX, clientY, clickTarget, doc);
+  const video = findVideoAtPoint(clientX, clientY, clickTarget as HTMLElement | null, doc);
   if (!video) return null;
 
   const vr = video.getBoundingClientRect();
@@ -765,9 +788,9 @@ export function getSubtitleElementAtPoint(
   const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!scope) return null;
 
-  let best: HTMLElement | null = null;
+  let best: (HTMLElement | SVGElement) | null = null;
   let bestArea = Infinity;
-  const walkStack: HTMLElement[] = [scope];
+  const walkStack: (HTMLElement | SVGElement)[] = [scope];
   let visited = 0;
   const MAX_VISITS = 800;
 
@@ -779,6 +802,7 @@ export function getSubtitleElementAtPoint(
 
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag)) continue;
+    if (tag === 'svg' && !el.querySelector('text')) continue;
 
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
@@ -791,7 +815,7 @@ export function getSubtitleElementAtPoint(
     // Push children in reverse so earlier siblings (typically the video
     // wrapper and the caption layer) are popped before later chrome.
     for (let i = el.children.length - 1; i >= 0; i--) {
-      walkStack.push(el.children[i] as HTMLElement);
+      walkStack.push(el.children[i] as HTMLElement | SVGElement);
     }
 
     if (!isPlausibleSubtitleLeaf(el, vr)) continue;
@@ -810,10 +834,10 @@ export function getSubtitleElementAtPoint(
   return null;
 }
 
-export function resolvePlayerContainer(element: HTMLElement): HTMLElement | null {
-  let current: HTMLElement | null = element;
+export function resolvePlayerContainer(element: HTMLElement | SVGElement): HTMLElement | null {
+  let current: Element | null = element;
   while (current && current !== document.body && current !== document.documentElement) {
-    if (current.querySelector('video')) return current;
+    if (current instanceof HTMLElement && current.querySelector('video')) return current;
     current = current.parentElement;
   }
   return null;

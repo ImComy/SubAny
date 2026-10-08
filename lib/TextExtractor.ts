@@ -110,7 +110,7 @@ export class TextExtractor {
    * Direct word extraction from active container's text nodes.
    * Completely immune to transparent click catchers, video wrappers, or overlay stacking.
    */
-  static getWordFromContainer(container: HTMLElement, x: number, y: number): TextExtractionResult {
+  static getWordFromContainer(container: HTMLElement | SVGElement, x: number, y: number): TextExtractionResult {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     let node: Node | null;
     let closestMatch: { word: string; rect: DOMRect; dist: number } | null = null;
@@ -163,7 +163,7 @@ export class TextExtractor {
   /**
    * Direct phrase extraction from active container.
    */
-  static getFullPhraseFromContainer(container: HTMLElement, x: number, y: number): TextExtractionResult {
+  static getFullPhraseFromContainer(container: HTMLElement | SVGElement, x: number, y: number): TextExtractionResult {
     const wordRes = this.getWordFromContainer(container, x, y);
     const DELIMITERS = /[.!?;,\u2014:\u2026]+/g;
 
@@ -212,7 +212,7 @@ export class TextExtractor {
   }
 
   /** Single word under the pointer */
-  static getWord(x: number, y: number, container?: HTMLElement | null): TextExtractionResult {
+  static getWord(x: number, y: number, container?: HTMLElement | SVGElement | null): TextExtractionResult {
     if (container) {
       const direct = this.getWordFromContainer(container, x, y);
       if (direct.text) return direct;
@@ -235,7 +235,7 @@ export class TextExtractor {
    * punctuation (. ! ? ; , — : …) inside the subtitle node.
    * Falls back to the full text-node content if no sentence boundary is found.
    */
-  static getFullPhrase(x: number, y: number, container?: HTMLElement | null): TextExtractionResult {
+  static getFullPhrase(x: number, y: number, container?: HTMLElement | SVGElement | null): TextExtractionResult {
     if (container) {
       const direct = this.getFullPhraseFromContainer(container, x, y);
       if (direct.text) return direct;

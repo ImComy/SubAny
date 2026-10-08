@@ -15,7 +15,7 @@ import {
  * still useful for hover/click routing.
  */
 export interface UniversalHit {
-  element: HTMLElement | null;
+  element: HTMLElement | SVGElement | null;
   native: NativeSubtitleHit | null;
   video: HTMLVideoElement | null;
 }

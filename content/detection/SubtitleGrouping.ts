@@ -2,15 +2,16 @@ import { getLowestCommonHTMLElement, measureGlyphBounds } from '../../utils/dom'
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
 import { isPlayerControlRegion } from './CandidateScorer';
 
-export function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null): boolean {
+export function isUsableSubtitleLine(el: HTMLElement | SVGElement, videoRect: DOMRect | null): boolean {
   if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
 
   const rawText = normalizeSubtitleText(el.textContent || '');
   if (!rawText || !isSubtitleText(rawText)) return false;
-  if (isPlayerControlRegion(el)) return false;
+  if (isPlayerControlRegion(el as HTMLElement)) return false;
 
   const tag = el.tagName.toLowerCase();
-  if (['video', 'audio', 'canvas', 'svg', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) return false;
+  if (['video', 'audio', 'canvas', 'path', 'button', 'input', 'select', 'textarea'].includes(tag)) return false;
+  if (tag === 'svg' && !el.querySelector('text')) return false;
 
   if (el.querySelector('video, canvas') !== null) return false;
   if (el.closest('button, [role="button"], [role="slider"], [role="progressbar"], input')) return false;
@@ -23,16 +24,20 @@ export function isUsableSubtitleLine(el: HTMLElement, videoRect: DOMRect | null)
   if (rect.width <= 0 || rect.height <= 0) return false;
 
   if (videoRect) {
+    const isSvgText = el instanceof SVGElement || tag === 'text';
     const tb = measureGlyphBounds(el);
     const contentWidth = tb ? tb.width : rect.width;
     const contentHeight = tb ? tb.height : rect.height;
-    if (contentWidth >= videoRect.width * 0.96) return false;
-    if (contentHeight >= videoRect.height * 0.40) return false;
+    const maxContentWidth = isSvgText ? Math.max(videoRect.width * 2.2, 2000) : videoRect.width * 0.99;
+    const maxContentHeight = Math.max(320, videoRect.height * 0.75);
+    if (contentWidth >= maxContentWidth) return false;
+    if (contentHeight >= maxContentHeight) return false;
+    const horizontalSlack = isSvgText ? Math.max(600, videoRect.width) : 50;
     if (
-      rect.right < videoRect.left - 24 ||
-      rect.left > videoRect.right + 24 ||
-      rect.bottom < videoRect.top - 24 ||
-      rect.top > videoRect.bottom + 24
+      rect.right < videoRect.left - horizontalSlack ||
+      rect.left > videoRect.right + horizontalSlack ||
+      rect.bottom < videoRect.top - 50 ||
+      rect.top > videoRect.bottom + 50
     ) return false;
   }
 
@@ -101,11 +106,11 @@ export function canBelongToSubtitleGroup(
  * Check if an element is already a cohesive multi-line container with multiple
  * subtitle line children (e.g. .karaoke-wrapper, .dual-wrapper).
  */
-export function isMultiLineSubtitleContainer(el: HTMLElement, videoRect: DOMRect | null): boolean {
+export function isMultiLineSubtitleContainer(el: HTMLElement | SVGElement, videoRect: DOMRect | null): boolean {
   if (!el || el.id === 'subany-extension-root' || el.id?.startsWith('subany-')) return false;
   if (el.children.length < 2) return false;
   if (el.querySelector('video, canvas, button, input, select, textarea') !== null) return false;
-  if (isPlayerControlRegion(el, videoRect)) return false;
+  if (isPlayerControlRegion(el as HTMLElement, videoRect)) return false;
 
   const validChildCount = Array.from(el.children).filter((child) => {
     const c = child as HTMLElement;
@@ -120,15 +125,20 @@ export function isMultiLineSubtitleContainer(el: HTMLElement, videoRect: DOMRect
   const contentHeight = tb ? tb.height : el.getBoundingClientRect().height;
 
   if (videoRect) {
-    if (contentWidth > videoRect.width * 0.95) return false;
-    if (contentHeight > videoRect.height * 0.40) return false;
+    if (contentWidth > videoRect.width * 0.98) return false;
+    if (contentHeight > Math.max(320, videoRect.height * 0.75)) return false;
   }
 
   return true;
 }
 
-export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | null): HTMLElement {
+export function combineSubtitleLines(anchor: HTMLElement | SVGElement, videoRect: DOMRect | null): HTMLElement | SVGElement {
   if (!anchor) return anchor;
+
+  // SVG text is an atomic vector caption
+  if (anchor instanceof SVGElement || anchor.tagName.toLowerCase() === 'text') {
+    return anchor;
+  }
 
   // If anchor is already the multi-line container enclosing multiple lines, keep it
   if (isMultiLineSubtitleContainer(anchor, videoRect)) {
@@ -167,7 +177,7 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
     }
   }
 
-  const related: HTMLElement[] = [anchor];
+  const related: HTMLElement[] = [anchor as HTMLElement];
 
   // Transitive cluster grouping: a candidate belongs if it can group with ANY accepted member
   let addedNew = true;
@@ -200,8 +210,8 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
   const maxBottom = Math.max(...related.map((el) => el.getBoundingClientRect().bottom));
   const clusterHeight = maxBottom - minTop;
   const maxClusterHeight = videoRect
-    ? Math.max(180, videoRect.height * 0.35)
-    : Math.max(180, window.innerHeight * 0.35);
+    ? Math.max(320, videoRect.height * 0.75)
+    : Math.max(320, window.innerHeight * 0.60);
 
   if (clusterHeight > maxClusterHeight) {
     const nearby = related.filter((el) => {
@@ -232,9 +242,9 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
   const textWidth = tb ? tb.width : groupRect.width;
   const textHeight = tb ? tb.height : groupRect.height;
   if (videoRect) {
-    if (textWidth > videoRect.width * 0.95) return anchor;
-    if (textHeight > videoRect.height * 0.40) return anchor;
-  } else if (textHeight > window.innerHeight * 0.40) {
+    if (textWidth > videoRect.width * 0.98) return anchor;
+    if (textHeight > Math.max(320, videoRect.height * 0.75)) return anchor;
+  } else if (textHeight > Math.max(350, window.innerHeight * 0.60)) {
     return anchor;
   }
   return group;

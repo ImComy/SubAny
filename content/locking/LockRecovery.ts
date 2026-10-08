@@ -25,7 +25,7 @@ import {
  * Returns -Infinity when the candidate is disqualified outright (e.g. wrong
  * video, not a usable subtitle line).
  */
-export function scoreLockedReplacement(state: ContentState, candidate: HTMLElement): number {
+export function scoreLockedReplacement(state: ContentState, candidate: HTMLElement | SVGElement): number {
   const anchor = state.lockedSubtitleAnchor;
   if (!anchor) return -Infinity;
   if (!isUsableSubtitleLine(candidate, null)) return -Infinity;
@@ -113,7 +113,7 @@ export function scoreLockedReplacement(state: ContentState, candidate: HTMLEleme
  *
  * Side effect: on success, refreshes the stored anchor ratios.
  */
-export function findLockedReplacement(state: ContentState): HTMLElement | null {
+export function findLockedReplacement(state: ContentState): HTMLElement | SVGElement | null {
   if (!state.lockedSubtitleAnchor) return null;
 
   const video = findCurrentLockedVideo(state);
@@ -124,26 +124,32 @@ export function findLockedReplacement(state: ContentState): HTMLElement | null {
 
   const MAX_SCAN = 3000;
   let scanned = 0;
-  const candidates: HTMLElement[] = [];
+  const candidates: (HTMLElement | SVGElement)[] = [];
 
-  const walk = (root: HTMLElement) => {
-    const stack: HTMLElement[] = [root];
+  const walk = (root: HTMLElement | SVGElement) => {
+    const stack: (HTMLElement | SVGElement)[] = [root];
     while (stack.length > 0 && scanned < MAX_SCAN) {
       const el = stack.pop()!;
       scanned += 1;
       if (el !== state.activeContainerEl && isUsableSubtitleLine(el, null)) {
         const r = el.getBoundingClientRect();
+        const isSvg = el instanceof SVGElement;
+        const maxWidth = isSvg ? Math.max(window.innerWidth * 2.2, 2000) : window.innerWidth * 0.96;
+        const maxHeight = Math.max(320, window.innerHeight * 0.75);
         if (
           r.width > 0 &&
           r.height > 0 &&
-          r.width <= window.innerWidth * 0.96 &&
-          r.height <= window.innerHeight * 0.30
+          r.width <= maxWidth &&
+          r.height <= maxHeight
         ) {
           candidates.push(el);
         }
       }
       for (let i = 0; i < el.children.length; i += 1) {
-        stack.push(el.children[i] as HTMLElement);
+        const ch = el.children[i];
+        if (ch instanceof HTMLElement || ch instanceof SVGElement) {
+          stack.push(ch);
+        }
       }
     }
   };
@@ -152,7 +158,7 @@ export function findLockedReplacement(state: ContentState): HTMLElement | null {
 
   if (candidates.length === 0) return null;
 
-  let best: HTMLElement | null = null;
+  let best: HTMLElement | SVGElement | null = null;
   let bestScore = 24;
   for (const candidate of candidates) {
     const score = scoreLockedReplacement(state, candidate);
@@ -182,7 +188,7 @@ export function findLockedReplacement(state: ContentState): HTMLElement | null {
  *   3. Give up and return the current (possibly stale) container so the
  *      monitor can retry on the next event.
  */
-export function tryRecoverLockedContainer(state: ContentState): HTMLElement | null {
+export function tryRecoverLockedContainer(state: ContentState): HTMLElement | SVGElement | null {
   console.time('[SubAny] tryRecoverLockedContainer');
   try {
     if (!state.settings.lockedSelector && !state.lockedSubtitleAnchor) {
@@ -190,12 +196,12 @@ export function tryRecoverLockedContainer(state: ContentState): HTMLElement | nu
     }
 
   if (state.settings.lockedSelector) {
-    let selectorTarget: HTMLElement | null = null;
+    let selectorTarget: HTMLElement | SVGElement | null = null;
     const doc = state.activeContainerEl?.ownerDocument || document;
     try {
-      selectorTarget = doc.querySelector(state.settings.lockedSelector) as HTMLElement | null;
+      selectorTarget = doc.querySelector(state.settings.lockedSelector) as HTMLElement | SVGElement | null;
       if (!selectorTarget && doc !== document) {
-        selectorTarget = document.querySelector(state.settings.lockedSelector) as HTMLElement | null;
+        selectorTarget = document.querySelector(state.settings.lockedSelector) as HTMLElement | SVGElement | null;
       }
     } catch (_) {
       selectorTarget = null;
@@ -217,7 +223,7 @@ export function tryRecoverLockedContainer(state: ContentState): HTMLElement | nu
   }
 
   console.time('[SubAny] findLockedReplacement');
-  let replacement: HTMLElement | null;
+  let replacement: HTMLElement | SVGElement | null;
   try {
     replacement = findLockedReplacement(state);
   } finally {

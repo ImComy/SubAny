@@ -185,7 +185,7 @@ export class ContentRenderer {
    * renderability. The visible dashed box is driven by `resolveVisualRect`,
    * which measures text nodes.
    */
-  private resolveRectTarget(): HTMLElement | null {
+  private resolveRectTarget(): HTMLElement | SVGElement | null {
     const container = this.state.activeContainerEl;
     if (!container || !container.isConnected) return null;
 
@@ -210,7 +210,7 @@ export class ContentRenderer {
    * Fallback: element-level Range (used only if there are no text nodes
    * to walk — e.g. an image-replacement caption).
    */
-  private resolveVisualRect(target: HTMLElement | null): DOMRect | null {
+  private resolveVisualRect(target: HTMLElement | SVGElement | null): DOMRect | null {
     if (!target) return null;
 
     const tight = measureCaptionBounds(target);

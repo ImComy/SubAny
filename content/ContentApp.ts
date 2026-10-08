@@ -442,7 +442,7 @@ export class ContentApp {
     });
   }
 
-  private async lockContainer(element: HTMLElement, isAuto = false): Promise<void> {
+  private async lockContainer(element: HTMLElement | SVGElement, isAuto = false): Promise<void> {
     return this.lockController.lock(element, isAuto);
   }
 
@@ -574,7 +574,7 @@ export class ContentApp {
   // Glow
   // ---------------------------------------------------------------------
 
-  private triggerGlow(el: HTMLElement): void {
+  private triggerGlow(el: HTMLElement | SVGElement): void {
     const s = this.state;
     if (!s.settings.enableGlowEffect) return;
 

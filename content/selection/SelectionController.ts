@@ -57,7 +57,7 @@ const CONTROL_SELECTOR =
   'button, a, input, select, textarea, [role="button"], [role="slider"], [role="progressbar"], [contenteditable="true"]';
 
 const SKIP_TAGS = new Set([
-  'video', 'audio', 'canvas', 'svg', 'button', 'input', 'select',
+  'video', 'audio', 'canvas', 'path', 'button', 'input', 'select',
   'script', 'style', 'noscript', 'head', 'meta', 'link', 'iframe',
   'object', 'embed', 'img', 'picture', 'source', 'track',
   'br', 'hr', 'wbr',
@@ -69,7 +69,7 @@ const SKIP_TAGS = new Set([
  * Uses the shared `isPlausibleSubtitleLeaf` predicate and scores candidates
  * to prevent locking arbitrary tiny text or full-width player chrome.
  */
-function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: Document = document): HTMLElement | null {
+function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: Document = document): HTMLElement | SVGElement | null {
   let video: HTMLVideoElement | null = null;
   for (const v of getAllVideos(targetDoc)) {
     const r = v.getBoundingClientRect();
@@ -90,13 +90,15 @@ function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: 
   const root = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!root) return null;
 
-  let best: HTMLElement | null = null;
+  let best: HTMLElement | SVGElement | null = null;
   let bestScore = -Infinity;
 
   const walk = (el: Element) => {
-    if (!(el instanceof HTMLElement)) return;
+    if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) return;
     if (el.closest('#subany-extension-root')) return;
-    if (SKIP_TAGS.has(el.tagName.toLowerCase())) return;
+    const tag = el.tagName.toLowerCase();
+    if (SKIP_TAGS.has(tag)) return;
+    if (tag === 'svg' && !el.querySelector('text')) return;
 
     for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
       walk(child);
@@ -109,7 +111,7 @@ function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: 
     if (clientX < r.left - 12 || clientX > r.right + 12) return;
     if (clientY < r.top - 12 || clientY > r.bottom + 12) return;
 
-    if (!isPlausibleSubtitleLeaf(el, vr, { allowTop: true })) return;
+    if (!isPlausibleSubtitleLeaf(el as HTMLElement | SVGElement, vr, { allowTop: true })) return;
 
     let score = 100;
     const centerY = r.top + r.height / 2;
@@ -121,7 +123,7 @@ function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: 
 
     if (score > bestScore) {
       bestScore = score;
-      best = el;
+      best = el as HTMLElement | SVGElement;
     }
   };
 
@@ -134,7 +136,7 @@ function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: 
 // ---------------------------------------------------------------------------
 
 export interface SelectionDeps {
-  lockContainer: (element: HTMLElement) => Promise<void>;
+  lockContainer: (element: HTMLElement | SVGElement) => Promise<void>;
   stopAutoDetection: () => void;
   resumeAutoDetection: () => void;
   startVideoMonitor: () => void;
@@ -197,7 +199,7 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
   lastMoveX = e.clientX;
   lastMoveY = e.clientY;
 
-  const target = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const target = (e.composedPath?.()[0] as HTMLElement | SVGElement | null) ?? (e.target as HTMLElement | SVGElement | null);
   const doc = target?.ownerDocument ?? document;
 
   if (!isPointerOverAnyVideo(e.clientX, e.clientY, 24, doc)) {
@@ -246,7 +248,7 @@ export function handleSelectionClick(
   e.stopPropagation();
   registerComposedShadowRoots(e);
 
-  const target = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const target = (e.composedPath?.()[0] as HTMLElement | SVGElement | null) ?? (e.target as HTMLElement | SVGElement | null);
   const doc = target?.ownerDocument ?? document;
 
   // 1. Primary hit-test.

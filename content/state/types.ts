@@ -15,7 +15,7 @@ export interface LockedSubtitleAnchor {
 export interface AutoTrackState {
   key: string;
   video: HTMLVideoElement | null;
-  element: HTMLElement | null;
+  element: HTMLElement | SVGElement | null;
   lastText: string;
   seen: number;
   textChanges: number;

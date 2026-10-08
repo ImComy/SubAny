@@ -2,10 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { measureGlyphBounds } from '../utils/dom';
 
 export interface SubtitleOverlayProps {
-  glowTarget: HTMLElement | null;
-  lockedElement: HTMLElement | null;
+  glowTarget: HTMLElement | SVGElement | null;
+  lockedElement: HTMLElement | SVGElement | null;
   lockedRect?: DOMRect | null;
-  selectionCandidate: HTMLElement | null;
+  selectionCandidate: HTMLElement | SVGElement | null;
   isSelecting: boolean;
   nativeSelectionRect?: DOMRect | null;
   hoveredWordRect?: DOMRect | null;

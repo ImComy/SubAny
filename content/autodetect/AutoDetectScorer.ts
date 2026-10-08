@@ -11,14 +11,14 @@ import { makeAutoRegionKey } from './AutoRegionKey';
 import { AUTO_DETECTION_WEIGHTS as weights } from './weights';
 
 export interface AutoCandidate {
-  element: HTMLElement;
+  element: HTMLElement | SVGElement;
   video: HTMLVideoElement | null;
   score: number;
   text: string;
   key: string;
 }
 
-export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement | null): number {
+export function scoreAutoCandidate(element: HTMLElement | SVGElement, video: HTMLVideoElement | null): number {
   const videoRect = video?.getBoundingClientRect() ?? null;
   if (isPlayerControlRegion(element, videoRect)) return -Infinity;
 
@@ -85,13 +85,13 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
   if (videos.length === 0) return [];
 
   const raw: Array<{
-    element: HTMLElement;
+    element: HTMLElement | SVGElement;
     video: HTMLVideoElement | null;
     score: number;
     text: string;
   }> = [];
 
-  const visitedElements = new Set<HTMLElement>();
+  const visitedElements = new Set<Element>();
 
   for (const video of videos) {
     const videoRect = video.getBoundingClientRect();
@@ -101,7 +101,7 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
     const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
     if (!scope) continue;
 
-    const walkStack: HTMLElement[] = [scope];
+    const walkStack: (HTMLElement | SVGElement)[] = [scope];
     let visited = 0;
     const MAX_VISITS = 300;
 
@@ -114,7 +114,11 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
       visitedElements.add(el);
 
       const tag = el.tagName.toLowerCase();
-      if (['video', 'audio', 'button', 'input', 'select', 'textarea', 'svg', 'path', 'script', 'style'].includes(tag)) continue;
+      if (tag === 'svg') {
+        if (!el.querySelector('text')) continue;
+      } else if (['video', 'audio', 'button', 'input', 'select', 'textarea', 'path', 'script', 'style'].includes(tag)) {
+        continue;
+      }
       if (el.matches('[role="button"], [role="slider"], [role="progressbar"]')) continue;
 
       // Free filter: textContent does not force layout. Skip elements with
@@ -122,7 +126,7 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
       const text = normalizeSubtitleText(el.textContent ?? '');
       const textLooksLikeSubtitle =
         text.length >= 2 &&
-        text.length <= 400 &&
+        text.length <= 1200 &&
         isSubtitleText(text) &&
         !isPlaybackTimeText(text);
 
@@ -143,9 +147,11 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
           const contentWidth = tb ? tb.width : rect.width;
           const contentHeight = tb ? tb.height : rect.height;
 
+          const isSvg = el instanceof SVGElement;
           const tooBig =
-            contentWidth > videoRect.width * 0.90 &&
-            contentHeight > videoRect.height * 0.15;
+            !isSvg &&
+            contentWidth > videoRect.width * 0.96 &&
+            contentHeight > Math.max(320, videoRect.height * 0.75);
 
           if (insideVideo && inSubtitleBand && !tooBig) {
             if (isUsableSubtitleLine(el, videoRect) && !isPlayerControlRegion(el, videoRect)) {
@@ -160,7 +166,10 @@ export function collectAutoSubtitleCandidates(targetDoc: Document = document): A
 
       // Descend into children. Prune by tag: skip already-processed subtrees.
       for (let i = 0; i < el.children.length; i++) {
-        walkStack.push(el.children[i] as HTMLElement);
+        const ch = el.children[i];
+        if (ch instanceof HTMLElement || ch instanceof SVGElement) {
+          walkStack.push(ch);
+        }
       }
     }
   }

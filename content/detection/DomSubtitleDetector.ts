@@ -31,9 +31,9 @@ import { combineSubtitleLines } from './SubtitleGrouping';
 export function findGenuineSubtitleCandidate(
   clientX: number,
   clientY: number,
-  clickTarget?: HTMLElement | null,
+  clickTarget?: HTMLElement | SVGElement | null,
   targetDoc: Document = document,
-): HTMLElement | null {
+): HTMLElement | SVGElement | null {
   const el = getSubtitleElementAtPoint(clientX, clientY, clickTarget, targetDoc);
   if (!el) return null;
   const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
@@ -47,7 +47,7 @@ export function findSubtitleByGeometry(
   clientX: number,
   clientY: number,
   targetDoc: Document = document,
-): HTMLElement | null {
+): HTMLElement | SVGElement | null {
   const el = getSubtitleElementAtPoint(clientX, clientY, null, targetDoc);
   if (!el) return null;
   const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
@@ -65,7 +65,7 @@ export function findSubtitleByGeometry(
  * Matches the same scope rule as `getSubtitleElementAtPoint`, so the two
  * paths cannot disagree about where the caption lives.
  */
-export function findBestSubtitleContainer(targetDoc: Document = document): HTMLElement | null {
+export function findBestSubtitleContainer(targetDoc: Document = document): HTMLElement | SVGElement | null {
   const videos = getAllVideos(targetDoc);
   if (videos.length === 0) return null;
 

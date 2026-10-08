@@ -155,7 +155,7 @@ export function findCurrentLockedVideo(state: ContentState): HTMLVideoElement | 
  * Snapshot the element as the current locked anchor and update the proxy.
  * Called after a fresh user lock and after every successful recovery.
  */
-export function rememberLockedAnchor(state: ContentState, element: HTMLElement): void {
+export function rememberLockedAnchor(state: ContentState, element: HTMLElement | SVGElement): void {
   const anchor = createLockedAnchor(element);
   if (!anchor) return;
 
@@ -178,7 +178,7 @@ export function rememberLockedAnchor(state: ContentState, element: HTMLElement):
  */
 export function setLockedActiveContainer(
   state: ContentState,
-  element: HTMLElement,
+  element: HTMLElement | SVGElement,
   updateAnchor = true,
 ): void {
   if (!element || !element.isConnected) return;

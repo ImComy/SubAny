@@ -12,7 +12,7 @@
  */
 import { getAllVideos } from '../../utils/dom';
 
-export function makeAutoRegionKey(element: HTMLElement, video: HTMLVideoElement | null): string {
+export function makeAutoRegionKey(element: HTMLElement | SVGElement, video: HTMLVideoElement | null): string {
   const rect = element.getBoundingClientRect();
   const vr = video?.getBoundingClientRect() ?? null;
 

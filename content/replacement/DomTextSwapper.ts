@@ -10,7 +10,7 @@
 export class DomTextSwapper {
   private saved = new Map<Text, string>();
 
-  swapText(container: HTMLElement, newText: string) {
+  swapText(container: HTMLElement | SVGElement, newText: string) {
     this.restore();
     const textNodes = this.collectTextNodes(container);
     if (textNodes.length === 0) return;
@@ -32,7 +32,7 @@ export class DomTextSwapper {
     return this.saved.size > 0;
   }
 
-  private collectTextNodes(el: HTMLElement): Text[] {
+  private collectTextNodes(el: HTMLElement | SVGElement): Text[] {
     const nodes: Text[] = [];
     const doc = el.ownerDocument || document;
     const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);

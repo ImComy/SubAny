@@ -3,12 +3,12 @@
 import { findGenuineSubtitleCandidate } from './DomSubtitleDetector';
 import { findNativeSubtitleAtPoint, isLikelySubtitleZone, type NativeSubtitleHit } from './NativeSubtitleDetector';
 
-export function findSubtitleElementUnderPoint(clientX: number, clientY: number, targetDoc: Document = document): HTMLElement | null {
+export function findSubtitleElementUnderPoint(clientX: number, clientY: number, targetDoc: Document = document): HTMLElement | SVGElement | null {
   return findGenuineSubtitleCandidate(clientX, clientY, null, targetDoc);
 }
 
 export function getUniversalSubtitleHit(clientX: number, clientY: number, targetDoc: Document = document): {
-  element: HTMLElement | null;
+  element: HTMLElement | SVGElement | null;
   native: NativeSubtitleHit | null;
   video: HTMLVideoElement | null;
 } {

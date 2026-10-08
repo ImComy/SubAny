@@ -19,14 +19,14 @@ export class ContentState {
 
   // DOM container the extension is currently attached to (either locked or
   // auto-tracked).
-  activeContainerEl: HTMLElement | null = null;
+  activeContainerEl: HTMLElement | SVGElement | null = null;
 
   // Transient glow highlight target.
-  glowTargetEl: HTMLElement | null = null;
+  glowTargetEl: HTMLElement | SVGElement | null = null;
 
   // Selection mode.
   isSelecting = false;
-  selectionCandidateEl: HTMLElement | null = null;
+  selectionCandidateEl: HTMLElement | SVGElement | null = null;
 
   // Hover/word highlight.
   hoveredWordRect: DOMRect | null = null;
@@ -54,7 +54,7 @@ export class ContentState {
   lockedVisualProxyStyle: CSSStyleDeclaration | null = null;
   lockedContainerObserver: MutationObserver | null = null;
   lockedPositionObserver: ResizeObserver | null = null;
-  lockedPositionEventTarget: HTMLElement | null = null;
+  lockedPositionEventTarget: HTMLElement | SVGElement | null = null;
   lockedPositionEventHandler: ((event: Event) => void) | null = null;
   lockedPositionRafId: number | null = null;
   lockedPositionKey = '';
@@ -68,7 +68,7 @@ export class ContentState {
   autoDetectionRunning = false;
   autoDetectionDisabled = false;
   autoDetectionRequested = false;
-  autoDetectedElement: HTMLElement | null = null;
+  autoDetectedElement: HTMLElement | SVGElement | null = null;
   autoDetectedVideo: HTMLVideoElement | null = null;
   autoDetectedTrackKey: string | null = null;
   autoLastVisibleAt = 0;

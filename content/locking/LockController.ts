@@ -20,7 +20,7 @@ export interface LockControllerDeps {
   domSwapper: DomTextSwapper;
 
   /** Brief visual highlight when the extension attaches to a container. */
-  triggerGlow: (el: HTMLElement) => void;
+  triggerGlow: (el: HTMLElement | SVGElement) => void;
 
   /** Stop the auto-detection monitor. Called when the user takes over. */
   stopAutoDetection: () => void;
@@ -61,7 +61,7 @@ export class LockController {
    * `isAuto = true` is preserved for API compatibility with the original
    * `lockContainer(element, isAuto)`; it does not persist anything.
    */
-  async lock(element: HTMLElement, isAuto = false): Promise<void> {
+  async lock(element: HTMLElement | SVGElement, isAuto = false): Promise<void> {
     const s = this.state;
     const { subtitleManager } = this.deps;
 
