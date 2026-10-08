@@ -14,14 +14,19 @@ import { createRoot, type Root } from 'react-dom/client';
  * again after a hot-reload-style remount.
  */
 export class ExtensionRoot {
+  private readonly doc: Document;
   private hostElement: HTMLDivElement | null = null;
   private shadowRoot: ShadowRoot | null = null;
   private root: Root | null = null;
 
+  constructor(doc: Document = document) {
+    this.doc = doc;
+  }
+
   private onFullscreenChange = () => {
     if (!this.hostElement) return;
-    const fsEl = document.fullscreenElement as HTMLElement | null;
-    const targetParent = fsEl || (document.documentElement || document.body);
+    const fsEl = this.doc.fullscreenElement as HTMLElement | null;
+    const targetParent = fsEl || (this.doc.documentElement || this.doc.body);
     if (this.hostElement.parentElement !== targetParent) {
       try {
         targetParent.appendChild(this.hostElement);
@@ -36,11 +41,11 @@ export class ExtensionRoot {
    * No-op if already attached.
    */
   attach(): Root {
-    if (this.root && this.hostElement && document.documentElement.contains(this.hostElement)) {
+    if (this.root && this.hostElement && this.hostElement.isConnected) {
       return this.root;
     }
 
-    const host = document.createElement('div');
+    const host = this.doc.createElement('div');
     host.id = 'subany-extension-root';
     // Keep the extension host above page content without depending on child
     // z-index values leaking into the document's stacking context.
@@ -50,11 +55,11 @@ export class ExtensionRoot {
     host.style.pointerEvents = 'none';
     const shadow = host.attachShadow({ mode: 'open' });
     
-    const fsEl = document.fullscreenElement as HTMLElement | null;
-    const parent = fsEl || (document.documentElement || document.body);
+    const fsEl = this.doc.fullscreenElement as HTMLElement | null;
+    const parent = fsEl || (this.doc.documentElement || this.doc.body);
     parent.appendChild(host);
 
-    document.addEventListener('fullscreenchange', this.onFullscreenChange);
+    this.doc.addEventListener('fullscreenchange', this.onFullscreenChange);
 
     this.hostElement = host;
     this.shadowRoot = shadow;
@@ -85,7 +90,7 @@ export class ExtensionRoot {
    * Unmount React and remove the host element. Idempotent.
    */
   dispose(): void {
-    document.removeEventListener('fullscreenchange', this.onFullscreenChange);
+    this.doc.removeEventListener('fullscreenchange', this.onFullscreenChange);
     try {
       this.root?.unmount();
     } catch (_) {

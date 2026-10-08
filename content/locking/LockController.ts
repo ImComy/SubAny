@@ -65,7 +65,7 @@ export class LockController {
     const s = this.state;
     const { subtitleManager } = this.deps;
 
-    if (!element || !document.documentElement.contains(element)) return;
+    if (!element || !element.isConnected) return;
 
     const elementRect = element.getBoundingClientRect();
     if (elementRect.width <= 0 || elementRect.height <= 0) return;

@@ -34,7 +34,8 @@ export class DomTextSwapper {
 
   private collectTextNodes(el: HTMLElement): Text[] {
     const nodes: Text[] = [];
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const doc = el.ownerDocument || document;
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     let node: Node | null;
     while ((node = walker.nextNode())) {
       const text = (node as Text).textContent?.trim() ?? '';

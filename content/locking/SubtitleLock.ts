@@ -1,7 +1,7 @@
 // locking/SubtitleLock.ts
 
 import type { ContentState } from '../state/ContentState';
-import { getVideoSignature } from '../../utils/dom';
+import { getVideoSignature, getAllVideos } from '../../utils/dom';
 import {
   createLockedAnchor,
   isHealthyLockedElement,
@@ -13,9 +13,10 @@ import {
  * overlay to render at the remembered anchor location.
  */
 export function ensureLockedVisualProxy(state: ContentState): HTMLDivElement {
-  if (state.lockedVisualProxyEl) return state.lockedVisualProxyEl;
+  if (state.lockedVisualProxyEl && state.lockedVisualProxyEl.isConnected) return state.lockedVisualProxyEl;
 
-  const proxy = document.createElement('div');
+  const doc = state.activeContainerEl?.ownerDocument || document;
+  const proxy = doc.createElement('div');
   proxy.id = 'subany-locked-visual-proxy';
   proxy.setAttribute('aria-hidden', 'true');
   proxy.style.position = 'fixed';
@@ -29,7 +30,7 @@ export function ensureLockedVisualProxy(state: ContentState): HTMLDivElement {
   proxy.style.zIndex = '2147483646';
   proxy.style.boxSizing = 'border-box';
   proxy.style.display = 'block';
-  document.documentElement.appendChild(proxy);
+  (doc.documentElement || doc.body).appendChild(proxy);
 
   state.lockedVisualProxyEl = proxy;
   state.lockedVisualProxyStyle = proxy.style;
@@ -48,7 +49,7 @@ export function updateLockedVisualProxy(state: ContentState): void {
 
   let rect: { left: number; top: number; width: number; height: number } | null = null;
 
-  if (state.activeContainerEl && document.documentElement.contains(state.activeContainerEl)) {
+  if (state.activeContainerEl && state.activeContainerEl.isConnected) {
     const live = state.activeContainerEl.getBoundingClientRect();
     if (live.width > 0 && live.height > 0) {
       rect = { left: live.left, top: live.top, width: live.width, height: live.height };
@@ -104,10 +105,11 @@ export function removeLockedVisualProxy(state: ContentState): void {
  * Returns null if nothing matches (e.g. the player has been torn down).
  */
 export function findCurrentLockedVideo(state: ContentState): HTMLVideoElement | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  const doc = state.activeContainerEl?.ownerDocument ?? document;
+  const videos = getAllVideos(doc);
   if (videos.length === 0) return null;
 
-  if (state.lockedVideoElement && document.documentElement.contains(state.lockedVideoElement)) {
+  if (state.lockedVideoElement && state.lockedVideoElement.isConnected) {
     const rect = state.lockedVideoElement.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) return state.lockedVideoElement;
   }
@@ -179,7 +181,7 @@ export function setLockedActiveContainer(
   element: HTMLElement,
   updateAnchor = true,
 ): void {
-  if (!element || !document.documentElement.contains(element)) return;
+  if (!element || !element.isConnected) return;
   state.activeContainerEl = element;
   if (updateAnchor) rememberLockedAnchor(state, element);
   else updateLockedVisualProxy(state);

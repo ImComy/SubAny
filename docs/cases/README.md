@@ -26,6 +26,7 @@ fix attempt — see **Misfiled cases** below.
 | [020](./020-multi-span-leaf-selection.md) | Multi-span caption selection isolated single word instead of full sentence | Detection | Fixed | All |
 | [021](./021-transform-motion-tracking-stall.md) | Transform motion tracking stopped after empty cue gap until hover | Lifecycle | Fixed | All |
 | [022](./022-multi-line-block-captions.md) | Multi-line and dual-subtitle block containers isolated to single line | Grouping & Locking | Fixed | All |
+| [023](./023-shadow-dom-and-iframe-captions.md) | Captions inside Shadow DOM and iframes not selected or tracked | Detection & Environment | Fixed | Shadow DOM, iframes, all |
 
 Numbers 017 and 018 are retired. They were fix attempts during the
 diagnosis of case 016 that were mislabelled as their own cases. Their

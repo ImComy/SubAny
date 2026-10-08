@@ -139,21 +139,22 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
 
   // If anchor's immediate parent is a multi-line container enclosing anchor and its siblings,
   // promote to that container directly
+  const doc = anchor.ownerDocument || document;
   const parent = anchor.parentElement;
-  if (parent && parent !== document.body && parent !== document.documentElement) {
+  if (parent && parent !== doc.body && parent !== doc.documentElement) {
     if (isMultiLineSubtitleContainer(parent, videoRect)) {
       return parent;
     }
   }
 
   const candidatePool: HTMLElement[] = [];
-  if (parent && parent !== document.body && parent !== document.documentElement) {
+  if (parent && parent !== doc.body && parent !== doc.documentElement) {
     for (let i = 0; i < parent.children.length; i++) {
       const child = parent.children[i] as HTMLElement;
       if (child !== anchor) candidatePool.push(child);
     }
     const grandParent = parent.parentElement;
-    if (grandParent && grandParent !== document.body && grandParent !== document.documentElement) {
+    if (grandParent && grandParent !== doc.body && grandParent !== doc.documentElement) {
       for (let i = 0; i < grandParent.children.length; i++) {
         const sibling = grandParent.children[i] as HTMLElement;
         if (sibling !== parent) {
@@ -174,6 +175,7 @@ export function combineSubtitleLines(anchor: HTMLElement, videoRect: DOMRect | n
     addedNew = false;
     for (let i = candidatePool.length - 1; i >= 0; i--) {
       const candidate = candidatePool[i];
+      if (!candidate) continue;
       const canGroup = related.some((member) => canBelongToSubtitleGroup(member, candidate, videoRect));
       if (canGroup) {
         related.push(candidate);

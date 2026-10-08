@@ -4,6 +4,7 @@ import {
   getSubtitleElementAtPoint,
   getVideoForElement,
   resolveCaptionLineContainer,
+  getAllVideos,
 } from '../../utils/dom';
 import { isSubtitleText } from '../../utils/text';
 import { combineSubtitleLines } from './SubtitleGrouping';
@@ -31,8 +32,9 @@ export function findGenuineSubtitleCandidate(
   clientX: number,
   clientY: number,
   clickTarget?: HTMLElement | null,
+  targetDoc: Document = document,
 ): HTMLElement | null {
-  const el = getSubtitleElementAtPoint(clientX, clientY, clickTarget);
+  const el = getSubtitleElementAtPoint(clientX, clientY, clickTarget, targetDoc);
   if (!el) return null;
   const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
   return combineSubtitleLines(el, vr);
@@ -44,8 +46,9 @@ export function findGenuineSubtitleCandidate(
 export function findSubtitleByGeometry(
   clientX: number,
   clientY: number,
+  targetDoc: Document = document,
 ): HTMLElement | null {
-  const el = getSubtitleElementAtPoint(clientX, clientY);
+  const el = getSubtitleElementAtPoint(clientX, clientY, null, targetDoc);
   if (!el) return null;
   const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
   return combineSubtitleLines(el, vr);
@@ -62,15 +65,16 @@ export function findSubtitleByGeometry(
  * Matches the same scope rule as `getSubtitleElementAtPoint`, so the two
  * paths cannot disagree about where the caption lives.
  */
-export function findBestSubtitleContainer(): HTMLElement | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+export function findBestSubtitleContainer(targetDoc: Document = document): HTMLElement | null {
+  const videos = getAllVideos(targetDoc);
   if (videos.length === 0) return null;
 
   for (const video of videos) {
     const vr = video.getBoundingClientRect();
     if (vr.width <= 0 || vr.height <= 0) continue;
 
-    const scope = video.parentElement?.parentElement ?? video.parentElement;
+    const rootNode = video.getRootNode();
+    const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
     if (!scope) continue;
 
     let best: HTMLElement | null = null;

@@ -2,6 +2,7 @@
 
 import type { ContentState } from '../state/ContentState';
 import type { LockedVideoEventBinding } from '../state/types';
+import { getAllVideos } from '../../utils/dom';
 
 /**
  * Media events that we re-run the tracking pulse on.
@@ -39,11 +40,18 @@ let bindings: LockedVideoEventBinding[] = [];
 /**
  * Tear down every listener the monitor previously attached.
  */
-export function stopVideoMonitor(): void {
-  for (const binding of bindings) {
-    binding.video.removeEventListener(binding.event, binding.handler);
+export function stopVideoMonitor(state?: ContentState): void {
+  const targetBindings = state ? state.lockedVideoBindings : bindings;
+  for (const binding of targetBindings) {
+    try {
+      binding.video.removeEventListener(binding.event, binding.handler);
+    } catch (_) {}
   }
-  bindings = [];
+  if (state) {
+    state.lockedVideoBindings = [];
+  } else {
+    bindings = [];
+  }
 }
 
 /**
@@ -58,10 +66,10 @@ export function stopVideoMonitor(): void {
  * If there are no videos on the page, this is a no-op and `bindings` stays
  * empty.
  */
-export function startVideoMonitor(_state: ContentState, deps: VideoMonitorDeps): void {
-  stopVideoMonitor();
+export function startVideoMonitor(state: ContentState, deps: VideoMonitorDeps, doc: Document = document): void {
+  stopVideoMonitor(state);
 
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  const videos = getAllVideos(doc);
   if (videos.length === 0) return;
 
   const handler: EventListener = () => {
@@ -71,7 +79,7 @@ export function startVideoMonitor(_state: ContentState, deps: VideoMonitorDeps):
   for (const video of videos) {
     for (const event of MEDIA_EVENTS) {
       video.addEventListener(event, handler, { passive: true });
-      bindings.push({ video, event, handler });
+      state.lockedVideoBindings.push({ video, event, handler });
     }
   }
 }
@@ -84,14 +92,14 @@ export function startVideoMonitor(_state: ContentState, deps: VideoMonitorDeps):
  * `setupVideoTimeTracking` — after locking a container and after settings
  * changes that affect tracking.
  */
-export function rescanVideoMonitor(state: ContentState, deps: VideoMonitorDeps): void {
-  startVideoMonitor(state, deps);
+export function rescanVideoMonitor(state: ContentState, deps: VideoMonitorDeps, doc: Document = document): void {
+  startVideoMonitor(state, deps, doc);
 }
 
 /**
  * Returns true when the monitor currently has any attached bindings. Used
  * by ContentApp to avoid re-scanning on every mutation.
  */
-export function isVideoMonitorActive(): boolean {
-  return bindings.length > 0;
+export function isVideoMonitorActive(state?: ContentState): boolean {
+  return state ? state.lockedVideoBindings.length > 0 : bindings.length > 0;
 }

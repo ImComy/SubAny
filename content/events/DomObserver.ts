@@ -1,7 +1,6 @@
-// events/DomObserver.ts
-
 import type { ContentState } from '../state/ContentState';
 import { debounce } from '../../utils/debounce';
+import { invalidateVideoCache } from '../../utils/dom';
 
 export interface DomObserverDeps {
   /**
@@ -35,14 +34,23 @@ const DEBOUNCE_MS = 240;
 export function startDomObserver(
   _state: ContentState,
   deps: DomObserverDeps,
+  doc: Document = document,
 ): DomObserverHandle {
-  const debounced = debounce(() => deps.onDomChange(), DEBOUNCE_MS);
+  const debounced = debounce(() => {
+    invalidateVideoCache();
+    deps.onDomChange();
+  }, DEBOUNCE_MS);
   const observer = new MutationObserver(debounced);
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
+  const target = doc.body || doc.documentElement;
+  if (target) {
+    observer.observe(target, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['src', 'srcdoc'],
+    });
+  }
 
   return {
     dispose: () => observer.disconnect(),

@@ -2,7 +2,7 @@
 
 import type { ContentState } from '../state/ContentState';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
-import { getVideoForElement, resolveCaptionLineContainer } from '../../utils/dom';
+import { getVideoForElement, resolveCaptionLineContainer, getAllVideos, getKnownShadowRoots } from '../../utils/dom';
 import { combineSubtitleLines } from '../detection/SubtitleGrouping';
 
 // ---------------------------------------------------------------------------
@@ -44,10 +44,8 @@ const MAX_WRAPPER_SLACK_PX = 40;
 // Module-scope runtime state (per content-script instance)
 // ---------------------------------------------------------------------------
 
-let lastNotifiedText = '';
-let lastScanAt = 0;
-let positionRafId = 0;
-let lastPositionKey = '';
+// Runtime state is stored on ContentState (lockedPositionRafId, lockedPositionKey,
+// lockedLastNotifiedText, lockedLastScanAt) to prevent cross-frame/multi-instance collisions.
 
 // ---------------------------------------------------------------------------
 // Geometry helpers
@@ -65,7 +63,8 @@ let lastPositionKey = '';
  * rendered run.
  */
 function textBounds(root: Element): DOMRect | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const text = node.nodeValue ?? '';
       if (!text.trim()) return NodeFilter.FILTER_REJECT;
@@ -85,7 +84,7 @@ function textBounds(root: Element): DOMRect | null {
 
   let node: Node | null;
   while ((node = walker.nextNode())) {
-    const range = document.createRange();
+    const range = doc.createRange();
     range.selectNodeContents(node);
     for (const rr of Array.from(range.getClientRects())) {
       if (rr.width <= 0 && rr.height <= 0) continue;
@@ -131,16 +130,7 @@ function containsInteractiveControls(el: HTMLElement): boolean {
  * wrap a small centered caption in a full-width block.
  */
 function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
-  if (!el) return false;
-  if (!document.documentElement.contains(el)) {
-    let curr: Node | null = el;
-    let connected = false;
-    while (curr) {
-      if (curr === document.documentElement) { connected = true; break; }
-      curr = curr instanceof ShadowRoot ? curr.host : curr.parentNode;
-    }
-    if (!connected) return false;
-  }
+  if (!el || !el.isConnected) return false;
   if (isExtensionElement(el)) return false;
   if (containsInteractiveControls(el)) return false;
 
@@ -247,11 +237,11 @@ export function resolveStableContainer(
   const groupTarget = combineSubtitleLines(lineTarget, videoRect);
   let current: HTMLElement = groupTarget;
   let best: HTMLElement = groupTarget;
-
   for (let i = 0; i < 6; i++) {
     const parent = current.parentElement;
     if (!parent) break;
-    if (parent === document.body || parent === document.documentElement) break;
+    const ownerDoc = parent.ownerDocument || document;
+    if (parent === ownerDoc.body || parent === ownerDoc.documentElement) break;
     if (parent.tagName.toLowerCase() === 'video') break;
     if (parent.classList.contains('html5-video-player') || parent.classList.contains('video-stream')) break;
     if (parent.matches('video, button, input, [role="button"], [role="slider"]')) break;
@@ -309,8 +299,9 @@ export function resolveStableContainer(
 // Video discovery
 // ---------------------------------------------------------------------------
 
-function findFirstVideo(): HTMLVideoElement | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+function findFirstVideo(state?: ContentState): HTMLVideoElement | null {
+  const doc = state?.activeContainerEl?.ownerDocument ?? document;
+  const videos = getAllVideos(doc);
   return videos.find((v) => {
     const r = v.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
@@ -318,7 +309,7 @@ function findFirstVideo(): HTMLVideoElement | null {
 }
 
 function findObservedVideo(state: ContentState): HTMLVideoElement | null {
-  if (state.lockedVideoElement && document.documentElement.contains(state.lockedVideoElement)) {
+  if (state.lockedVideoElement && state.lockedVideoElement.isConnected) {
     const r = state.lockedVideoElement.getBoundingClientRect();
     if (r.width > 0 && r.height > 0) return state.lockedVideoElement;
   }
@@ -329,7 +320,7 @@ function findObservedVideo(state: ContentState): HTMLVideoElement | null {
       return v;
     }
   }
-  return findFirstVideo();
+  return findFirstVideo(state);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +341,8 @@ function findCaptionInVideo(video: HTMLVideoElement): HTMLElement | null {
   const vr = video.getBoundingClientRect();
   if (vr.width <= 0 || vr.height <= 0) return null;
 
-  const scope = video.parentElement?.parentElement ?? video.parentElement;
+  const rootNode = video.getRootNode();
+  const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!scope) return null;
 
   let best: HTMLElement | null = null;
@@ -411,10 +403,32 @@ function tryResolveFromSelector(state: ContentState): HTMLElement | null {
   if (!selector) return null;
 
   let el: HTMLElement | null = null;
+  const doc = state.activeContainerEl?.ownerDocument ?? findObservedVideo(state)?.ownerDocument ?? document;
   try {
-    el = document.querySelector(selector) as HTMLElement | null;
+    el = doc.querySelector(selector) as HTMLElement | null;
+    if (!el && doc !== document) {
+      el = document.querySelector(selector) as HTMLElement | null;
+    }
   } catch (_) {
     return null;
+  }
+
+  if (!el) {
+    const video = findObservedVideo(state);
+    const root = (video?.getRootNode() ?? state.activeContainerEl?.getRootNode()) as ShadowRoot | Document | null;
+    if (root && root !== document && typeof root.querySelector === 'function') {
+      try {
+        el = root.querySelector(selector) as HTMLElement | null;
+      } catch (_) {}
+    }
+    if (!el) {
+      for (const sr of getKnownShadowRoots()) {
+        try {
+          el = sr.querySelector(selector) as HTMLElement | null;
+          if (el) break;
+        } catch (_) {}
+      }
+    }
   }
 
   if (!el) return null;
@@ -468,13 +482,15 @@ function recoverCaption(state: ContentState): HTMLElement | null {
  * so there is no cost for background tabs.
  */
 function startPositionTracking(state: ContentState): void {
-  stopPositionTracking();
-  lastPositionKey = '';
+  stopPositionTracking(state);
+  state.lockedPositionKey = '';
+
+  const win = state.activeContainerEl?.ownerDocument?.defaultView || window;
 
   const tick = (): void => {
     // Only stop if the lock has been cleared/cancelled.
     if (!state.lockedContainerObserver && !state.settings.lockedSelector) {
-      positionRafId = 0;
+      state.lockedPositionRafId = 0;
       return;
     }
 
@@ -486,30 +502,34 @@ function startPositionTracking(state: ContentState): void {
 
     if (el && el.isConnected) {
       const r = el.getBoundingClientRect();
+      const tb = textBounds(el);
       if (r.width > 0 && r.height > 0) {
+        const tbKey = tb ? `|tb:${tb.left.toFixed(1)}:${tb.top.toFixed(1)}:${tb.width.toFixed(1)}:${tb.height.toFixed(1)}` : '';
         const key =
           `${r.left.toFixed(1)}:${r.top.toFixed(1)}:` +
-          `${r.width.toFixed(1)}:${r.height.toFixed(1)}`;
+          `${r.width.toFixed(1)}:${r.height.toFixed(1)}` + tbKey;
 
-        if (key !== lastPositionKey) {
-          lastPositionKey = key;
+        if (key !== state.lockedPositionKey) {
+          state.lockedPositionKey = key;
           state.notify();
         }
       }
     }
 
-    positionRafId = requestAnimationFrame(tick);
+    const currentWin = state.activeContainerEl?.ownerDocument?.defaultView || win;
+    state.lockedPositionRafId = currentWin.requestAnimationFrame(tick);
   };
 
-  positionRafId = requestAnimationFrame(tick);
+  state.lockedPositionRafId = win.requestAnimationFrame(tick);
 }
 
-function stopPositionTracking(): void {
-  if (positionRafId) {
-    cancelAnimationFrame(positionRafId);
-    positionRafId = 0;
+function stopPositionTracking(state: ContentState): void {
+  if (state.lockedPositionRafId) {
+    const win = state.activeContainerEl?.ownerDocument?.defaultView || window;
+    win.cancelAnimationFrame(state.lockedPositionRafId);
+    state.lockedPositionRafId = 0;
   }
-  lastPositionKey = '';
+  state.lockedPositionKey = '';
 }
 
 // ---------------------------------------------------------------------------
@@ -555,9 +575,9 @@ export function stopLockedMonitor(state: ContentState): void {
   state.lockedPositionEventHandler = null;
 
   state.lastLockedRect = null;
-  lastNotifiedText = '';
-  lastScanAt = 0;
-  stopPositionTracking();
+  state.lockedLastNotifiedText = '';
+  state.lockedLastScanAt = 0;
+  stopPositionTracking(state);
 }
 
 /**
@@ -591,7 +611,8 @@ export function startLockedMonitor(
   const video = findObservedVideo(state);
   if (!video) return;
 
-  const scope = video.parentElement?.parentElement ?? video.parentElement;
+  const rootNode = video.getRootNode();
+  const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? rootNode : null);
   if (!scope) return;
 
   const observer = new MutationObserver(() => {
@@ -607,12 +628,12 @@ export function startLockedMonitor(
         // Reset the cooldown budget: we just proved the DOM is in a
         // healthy state, so a subsequent burst should not be blocked by
         // a stale timestamp from before this recovery.
-        lastScanAt = performance.now();
+        state.lockedLastScanAt = performance.now();
       } else {
         // ---- Step 3: expensive recovery, rate-limited. ----
         const now = performance.now();
-        if (now - lastScanAt < SCAN_COOLDOWN_MS) return;
-        lastScanAt = now;
+        if (now - state.lockedLastScanAt < SCAN_COOLDOWN_MS) return;
+        state.lockedLastScanAt = now;
 
         active = recoverCaption(state);
         state.activeContainerEl = active;
@@ -627,14 +648,14 @@ export function startLockedMonitor(
         state.lastObservedSubtitleText = '';
         state.notify();
       }
-      lastNotifiedText = '';
+      state.lockedLastNotifiedText = '';
       return;
     }
 
     // ---- Text change detection ----
     const text = normalizeSubtitleText(active.textContent ?? '');
-    if (text === lastNotifiedText) return;
-    lastNotifiedText = text;
+    if (text === state.lockedLastNotifiedText) return;
+    state.lockedLastNotifiedText = text;
 
     const isRealCue = text.length > 0 && isSubtitleText(text);
     if (!isRealCue) {
@@ -650,7 +671,7 @@ export function startLockedMonitor(
     // Real cue. Reposition the box immediately, then hand off to the
     // translation pipeline (no-op in hover/click modes, translation in
     // full-auto / replace-native modes).
-    if (!positionRafId) {
+    if (!state.lockedPositionRafId) {
       startPositionTracking(state);
     }
     state.notify();

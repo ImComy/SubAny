@@ -40,6 +40,8 @@ export interface KeyboardEventsHandle {
 export function startKeyboardEvents(
   state: ContentState,
   deps: KeyboardEventsDeps,
+  doc: Document = document,
+  win: Window = window,
 ): KeyboardEventsHandle {
   const onEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
@@ -53,13 +55,13 @@ export function startKeyboardEvents(
     handleInteractiveKeyDown(state, deps.interactive, e);
   };
 
-  window.addEventListener('keydown', onEscape, true);
-  document.addEventListener('keydown', onControl);
+  win.addEventListener('keydown', onEscape, true);
+  doc.addEventListener('keydown', onControl);
 
   return {
     dispose: () => {
-      window.removeEventListener('keydown', onEscape, true);
-      document.removeEventListener('keydown', onControl);
+      win.removeEventListener('keydown', onEscape, true);
+      doc.removeEventListener('keydown', onControl);
     },
   };
 }

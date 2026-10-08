@@ -2,7 +2,16 @@
 
 import type { ContentState } from '../state/ContentState';
 import { getHitAt, type UniversalHit } from './SubtitleHitTester';
-import { getSubtitleElementAtPoint, getVideoForElement, getSubtitleAcceptanceRegion, isPlausibleSubtitleLeaf, resolveCaptionLineContainer } from '../../utils/dom';
+import {
+  getSubtitleElementAtPoint,
+  getVideoForElement,
+  getSubtitleAcceptanceRegion,
+  isPlausibleSubtitleLeaf,
+  resolveCaptionLineContainer,
+  getAllVideos,
+  composedContains,
+  registerComposedShadowRoots,
+} from '../../utils/dom';
 import { combineSubtitleLines } from '../detection/SubtitleGrouping';
 import { resolveStableContainer } from '../locking/LockMonitor';
 
@@ -24,8 +33,8 @@ let lastMoveY = 0;
 const MOVE_THROTTLE_MS = 60;
 const MOVE_MIN_DISTANCE_SQ = 16; // 4px squared
 
-function isPointerOverAnyVideo(clientX: number, clientY: number, padding = 24): boolean {
-  const videos = document.querySelectorAll('video');
+function isPointerOverAnyVideo(clientX: number, clientY: number, padding = 24, targetDoc: Document = document): boolean {
+  const videos = getAllVideos(targetDoc);
   for (const video of videos) {
     const region = getSubtitleAcceptanceRegion(video);
     if (
@@ -60,9 +69,9 @@ const SKIP_TAGS = new Set([
  * Uses the shared `isPlausibleSubtitleLeaf` predicate and scores candidates
  * to prevent locking arbitrary tiny text or full-width player chrome.
  */
-function findCaptionElementAtPoint(clientX: number, clientY: number): HTMLElement | null {
+function findCaptionElementAtPoint(clientX: number, clientY: number, targetDoc: Document = document): HTMLElement | null {
   let video: HTMLVideoElement | null = null;
-  for (const v of document.querySelectorAll('video')) {
+  for (const v of getAllVideos(targetDoc)) {
     const r = v.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
     const region = getSubtitleAcceptanceRegion(v);
@@ -77,7 +86,8 @@ function findCaptionElementAtPoint(clientX: number, clientY: number): HTMLElemen
   if (!video) return null;
 
   const vr = video.getBoundingClientRect();
-  const root = video.parentElement?.parentElement ?? video.parentElement;
+  const rootNode = video.getRootNode();
+  const root = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!root) return null;
 
   let best: HTMLElement | null = null;
@@ -174,6 +184,7 @@ export function cancelSelection(
  */
 export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): void {
   if (!state.isSelecting) return;
+  registerComposedShadowRoots(e);
 
   const now = performance.now();
   if (now - lastMoveAt < MOVE_THROTTLE_MS) return;
@@ -186,7 +197,10 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
   lastMoveX = e.clientX;
   lastMoveY = e.clientY;
 
-  if (!isPointerOverAnyVideo(e.clientX, e.clientY)) {
+  const target = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const doc = target?.ownerDocument ?? document;
+
+  if (!isPointerOverAnyVideo(e.clientX, e.clientY, 24, doc)) {
     if (state.selectionCandidateEl !== null) {
       state.selectionCandidateEl = null;
       state.notify();
@@ -196,8 +210,8 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
 
   // Primary hit-tester, then fall back to the geometric resolver so the
   // preview matches what the click will install.
-  let candidate = getSubtitleElementAtPoint(e.clientX, e.clientY, null);
-  if (!candidate) candidate = findCaptionElementAtPoint(e.clientX, e.clientY);
+  let candidate = getSubtitleElementAtPoint(e.clientX, e.clientY, null, doc);
+  if (!candidate) candidate = findCaptionElementAtPoint(e.clientX, e.clientY, doc);
   if (candidate) {
     const video = getVideoForElement(candidate);
     const videoRect = video?.getBoundingClientRect() ?? null;
@@ -230,11 +244,13 @@ export function handleSelectionClick(
   if (!state.isSelecting) return;
   e.preventDefault();
   e.stopPropagation();
+  registerComposedShadowRoots(e);
 
-  const target = e.target as HTMLElement | null;
+  const target = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const doc = target?.ownerDocument ?? document;
 
   // 1. Primary hit-test.
-  let clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target);
+  let clickedLeaf = getSubtitleElementAtPoint(e.clientX, e.clientY, target, doc);
   console.log(
     '[SubAny] click', e.clientX, e.clientY,
     'leaf:', clickedLeaf?.className,
@@ -245,7 +261,7 @@ export function handleSelectionClick(
   //     a caption (very common on players with pointer-events:none on the
   //     caption layer). Resolves the target purely from coordinates.
   if (!clickedLeaf) {
-    clickedLeaf = findCaptionElementAtPoint(e.clientX, e.clientY);
+    clickedLeaf = findCaptionElementAtPoint(e.clientX, e.clientY, doc);
     if (clickedLeaf) {
       console.log(
         '[SubAny] click fallback resolved:',
@@ -275,7 +291,7 @@ export function handleSelectionClick(
   }
 
   // 2. Direct hit on current activeContainerEl descendant.
-  if (state.activeContainerEl && target && state.activeContainerEl.contains(target)) {
+  if (state.activeContainerEl && target && (state.activeContainerEl === target || composedContains(state.activeContainerEl, target))) {
     state.isSelecting = false;
     state.selectionCandidateEl = null;
     state.virtualSelectionHit = null;
@@ -287,7 +303,7 @@ export function handleSelectionClick(
   }
 
   // 3. Native TextTrack cue fallback.
-  const hit = getHitAt(e.clientX, e.clientY);
+  const hit = getHitAt(e.clientX, e.clientY, doc);
   if (hit.native) {
     state.isSelecting = false;
     state.selectionCandidateEl = null;
@@ -311,6 +327,7 @@ export function handleSelectionContextMenu(
   e: MouseEvent,
 ): void {
   if (!state.isSelecting) return;
+  registerComposedShadowRoots(e);
   e.preventDefault();
   e.stopPropagation();
   cancelSelection(state, deps, { resumeAuto: true });

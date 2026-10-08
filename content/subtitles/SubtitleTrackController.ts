@@ -1,15 +1,18 @@
 import type { SubtitleCue, SubtitleTrack } from './types';
 import type { ContentState } from '../state/ContentState';
+import { getAllVideos } from '../../utils/dom';
 
 export class SubtitleTrackController {
   private readonly state: ContentState;
+  private readonly doc: Document;
   private track: SubtitleTrack | null = null;
   private timer: number | null = null;
   private videos: HTMLVideoElement[] = [];
   private readonly onTimeUpdate = () => this.update();
 
-  constructor(state: ContentState) {
+  constructor(state: ContentState, doc: Document = document) {
     this.state = state;
+    this.doc = doc;
   }
 
   apply(track: SubtitleTrack): void {
@@ -56,7 +59,7 @@ export class SubtitleTrackController {
   }
 
   private refreshVideos(): void {
-    const currentVideos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    const currentVideos = getAllVideos(this.doc);
     for (const video of this.videos) {
       if (!currentVideos.includes(video)) video.removeEventListener('timeupdate', this.onTimeUpdate);
     }

@@ -191,8 +191,12 @@ export function tryRecoverLockedContainer(state: ContentState): HTMLElement | nu
 
   if (state.settings.lockedSelector) {
     let selectorTarget: HTMLElement | null = null;
+    const doc = state.activeContainerEl?.ownerDocument || document;
     try {
-      selectorTarget = document.querySelector(state.settings.lockedSelector) as HTMLElement | null;
+      selectorTarget = doc.querySelector(state.settings.lockedSelector) as HTMLElement | null;
+      if (!selectorTarget && doc !== document) {
+        selectorTarget = document.querySelector(state.settings.lockedSelector) as HTMLElement | null;
+      }
     } catch (_) {
       selectorTarget = null;
     }

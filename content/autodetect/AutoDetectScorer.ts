@@ -1,4 +1,4 @@
-import { resolveCaptionLineContainer, measureGlyphBounds } from '../../utils/dom';
+import { resolveCaptionLineContainer, measureGlyphBounds, getAllVideos } from '../../utils/dom';
 import { isPlaybackTimeText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
 import {
   getSubtitlePresentationAncestor,
@@ -80,8 +80,8 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
  *     already looks like a subtitle.
  *   - Walk is capped at 300 elements visited per video.
  */
-export function collectAutoSubtitleCandidates(): AutoCandidate[] {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+export function collectAutoSubtitleCandidates(targetDoc: Document = document): AutoCandidate[] {
+  const videos = getAllVideos(targetDoc);
   if (videos.length === 0) return [];
 
   const raw: Array<{
@@ -97,7 +97,8 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
     const videoRect = video.getBoundingClientRect();
     if (videoRect.width <= 0 || videoRect.height <= 0) continue;
 
-    const scope = video.parentElement?.parentElement ?? video.parentElement;
+    const rootNode = video.getRootNode();
+    const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
     if (!scope) continue;
 
     const walkStack: HTMLElement[] = [scope];

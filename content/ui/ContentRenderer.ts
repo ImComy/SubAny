@@ -10,6 +10,7 @@ import { combineSubtitleLines, isMultiLineSubtitleContainer } from '../detection
 
 export interface ContentRendererDeps {
   onUnlock: () => void;
+  delegateTooltip?: boolean;
 }
 
 /**
@@ -33,7 +34,8 @@ const NON_CAPTION_CLOSEST =
  * Returns null when no visible text was found.
  */
 function measureCaptionBounds(root: Element): DOMRect | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const text = node.nodeValue ?? '';
       if (!text.trim()) return NodeFilter.FILTER_REJECT;
@@ -55,7 +57,7 @@ function measureCaptionBounds(root: Element): DOMRect | null {
 
   let node: Node | null;
   while ((node = walker.nextNode())) {
-    const range = document.createRange();
+    const range = doc.createRange();
     range.selectNodeContents(node);
 
     for (const r of Array.from(range.getClientRects())) {
@@ -78,7 +80,7 @@ function measureCaptionBounds(root: Element): DOMRect | null {
  * such as an image-replacement or an SVG-caption player).
  */
 function measureElementBounds(target: Element): DOMRect | null {
-  const range = document.createRange();
+  const range = (target.ownerDocument || document).createRange();
   range.selectNodeContents(target);
 
   const rects = Array.from(range.getClientRects()).filter(
@@ -124,7 +126,7 @@ export class ContentRenderer {
     const activeRect = target?.getBoundingClientRect();
     const activeRenderable =
       !!target &&
-      document.documentElement.contains(target) &&
+      target.isConnected &&
       !!activeRect &&
       activeRect.width > 0 &&
       activeRect.height > 0;
@@ -154,7 +156,7 @@ export class ContentRenderer {
           targetLang: state.settings.targetLanguage,
           onUnlock: this.deps.onUnlock,
         }),
-        state.tooltipState
+        (state.tooltipState && !this.deps.delegateTooltip)
           ? React.createElement(Tooltip, {
               x: state.tooltipState.x,
               y: state.tooltipState.y,
@@ -185,8 +187,7 @@ export class ContentRenderer {
    */
   private resolveRectTarget(): HTMLElement | null {
     const container = this.state.activeContainerEl;
-    if (!container) return null;
-    if (!document.documentElement.contains(container)) return null;
+    if (!container || !container.isConnected) return null;
 
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;

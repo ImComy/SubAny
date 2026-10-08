@@ -9,6 +9,7 @@ export default defineContentScript({
     'https://player.videasy.net/*',
   ],
   allFrames: true,
+  matchAboutBlank: true,
   matchOriginAsFallback: true,
   async main() {
     const app = new ContentApp();

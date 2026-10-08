@@ -7,7 +7,7 @@ import type { VideoController } from '../../lib/VideoController';
 import { findNativeSubtitleAtPoint, findNativeWordAtPoint } from '../detection/SubtitleDetector';
 import { getHitAt, isOverActiveContainer } from '../selection/SubtitleHitTester';
 import { isSubtitleText } from '../../utils/text';
-import { getSubtitleAcceptanceRegion } from '../../utils/dom';
+import { getSubtitleAcceptanceRegion, getAllVideos, composedContains, registerComposedShadowRoots } from '../../utils/dom';
 import {
   beginInteractiveTranslation,
   clearInteractiveTranslation,
@@ -16,7 +16,7 @@ import {
 } from './TranslationState';
 
 function isPointerNearSubtitleBand(clientX: number, clientY: number, padding = 28): boolean {
-  const videos = document.querySelectorAll('video');
+  const videos = getAllVideos();
   for (const video of videos) {
     const region = getSubtitleAcceptanceRegion(video);
     if (
@@ -228,8 +228,9 @@ export function handleInteractiveMouseMove(
     }
   }
 
-  const hoveredTarget = e.target as HTMLElement | null;
-  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && state.activeContainerEl.contains(hoveredTarget);
+  registerComposedShadowRoots(e);
+  const hoveredTarget = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && (state.activeContainerEl === hoveredTarget || composedContains(state.activeContainerEl, hoveredTarget));
   const overDomSubtitle = activeContainsPointer || tContainsActive || isOverActiveContainer(state, e);
 
   if (overDomSubtitle) {
@@ -300,8 +301,9 @@ export function handleInteractiveClick(
     }
   }
 
-  const hoveredTarget = e.target as HTMLElement | null;
-  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && state.activeContainerEl.contains(hoveredTarget);
+  registerComposedShadowRoots(e);
+  const hoveredTarget = (e.composedPath?.()[0] as HTMLElement | null) ?? (e.target as HTMLElement | null);
+  const tContainsActive = !!state.activeContainerEl && !!hoveredTarget && (state.activeContainerEl === hoveredTarget || composedContains(state.activeContainerEl, hoveredTarget));
   if (activeContainsPointer || tContainsActive || isOverActiveContainer(state, e)) {
     const extraction = extractAt(state, e);
     if (extraction.text) {

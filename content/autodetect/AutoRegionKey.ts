@@ -10,6 +10,8 @@
  * Video-relative when a video is available, viewport-relative otherwise.
  * Matches the original `makeAutoRegionKey`.
  */
+import { getAllVideos } from '../../utils/dom';
+
 export function makeAutoRegionKey(element: HTMLElement, video: HTMLVideoElement | null): string {
   const rect = element.getBoundingClientRect();
   const vr = video?.getBoundingClientRect() ?? null;
@@ -20,7 +22,7 @@ export function makeAutoRegionKey(element: HTMLElement, video: HTMLVideoElement 
     const w = rect.width / vr.width;
     const h = rect.height / vr.height;
     const q = (n: number, step = 0.035) => Math.round(n / step);
-    const videoIndex = video ? Array.from(document.querySelectorAll('video')).indexOf(video) : -1;
+    const videoIndex = video ? getAllVideos().indexOf(video) : -1;
     return `v:${videoIndex}:${q(x)}:${q(y)}:${q(w, 0.04)}:${q(h, 0.04)}`;
   }
 

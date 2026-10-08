@@ -40,7 +40,8 @@ export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null
   if (isPlaybackTimeText(ownText)) return true;
 
   let current: HTMLElement | null = el.parentElement;
-  while (current && current !== document.body && current !== document.documentElement) {
+  const doc = el.ownerDocument || document;
+  while (current && current !== doc.body && current !== doc.documentElement) {
     const rect = current.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       const controls = getInteractiveControlCount(current);
@@ -73,8 +74,9 @@ export function isPlayerControlRegion(el: HTMLElement, videoRect: DOMRect | null
 }
 
 export function getSubtitlePresentationAncestor(el: HTMLElement, videoRect: DOMRect | null): HTMLElement | null {
+  const doc = el.ownerDocument || document;
   let current: HTMLElement | null = el.parentElement;
-  while (current && current !== document.body && current !== document.documentElement) {
+  while (current && current !== doc.body && current !== doc.documentElement) {
     const style = getComputedStyle(current);
     if (style.pointerEvents === 'none' && (style.position === 'absolute' || style.position === 'fixed')) {
       const rect = current.getBoundingClientRect();

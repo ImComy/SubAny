@@ -30,6 +30,124 @@ export function getLowestCommonHTMLElement(elements: HTMLElement[]): HTMLElement
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Shadow DOM & video discovery registry
+// ---------------------------------------------------------------------------
+
+const knownShadowRoots = new Set<ShadowRoot>();
+
+/**
+ * Opportunistically track any open shadow roots encountered during pointer/event paths.
+ * Calling this is completely free (iterates composedPath array of ~10 elements).
+ */
+export function registerComposedShadowRoots(e: Event): void {
+  if (typeof e.composedPath !== 'function') return;
+  for (const node of e.composedPath()) {
+    if (node instanceof ShadowRoot) {
+      knownShadowRoots.add(node);
+    } else if (node instanceof Element && node.shadowRoot) {
+      knownShadowRoots.add(node.shadowRoot);
+    }
+  }
+}
+
+export function getKnownShadowRoots(): ShadowRoot[] {
+  for (const sr of Array.from(knownShadowRoots)) {
+    if (!sr.isConnected && !(sr.host && sr.host.isConnected)) {
+      knownShadowRoots.delete(sr);
+    }
+  }
+  return Array.from(knownShadowRoots);
+}
+
+function discoverOpenShadowRoots(root: Document | ShadowRoot): ShadowRoot[] {
+  const found: ShadowRoot[] = [];
+  try {
+    const hosts = root.querySelectorAll('*:not(:defined), [id*="player"], [class*="player"], [id*="video"], [class*="video"], [id*="mount"], [class*="mount"]');
+    for (let i = 0; i < hosts.length; i++) {
+      const sr = hosts[i]?.shadowRoot;
+      if (sr && !knownShadowRoots.has(sr)) {
+        knownShadowRoots.add(sr);
+        found.push(sr);
+      }
+    }
+  } catch (_) {}
+  return found;
+}
+
+let cachedVideos: HTMLVideoElement[] = [];
+let lastVideoScanAt = 0;
+const VIDEO_SCAN_CACHE_TTL_MS = 400;
+
+export function invalidateVideoCache(): void {
+  lastVideoScanAt = 0;
+}
+
+/**
+ * Discover all <video> elements on the page, including inside open Shadow DOM
+ * and same-origin iframes.
+ *
+ * Cached for 400ms to guarantee zero layout or DOM traversal overhead on hot
+ * pointer paths.
+ */
+export function getAllVideos(targetDoc: Document = document): HTMLVideoElement[] {
+  if (targetDoc !== document) {
+    const res: HTMLVideoElement[] = [];
+    try {
+      for (const v of Array.from(targetDoc.querySelectorAll('video'))) {
+        res.push(v as HTMLVideoElement);
+      }
+      discoverOpenShadowRoots(targetDoc);
+      for (const sr of getKnownShadowRoots()) {
+        if (sr.isConnected && (sr as any).ownerDocument === targetDoc) {
+          for (const v of Array.from(sr.querySelectorAll('video'))) {
+            res.push(v as HTMLVideoElement);
+          }
+        }
+      }
+    } catch (_) {}
+    return res;
+  }
+
+  const now = performance.now();
+  if (now - lastVideoScanAt < VIDEO_SCAN_CACHE_TTL_MS && cachedVideos.length > 0) {
+    return cachedVideos.filter((v) => v.isConnected);
+  }
+
+  const result: HTMLVideoElement[] = [];
+  const visitedRoots = new Set<Node>();
+
+  const scanRoot = (r: Document | ShadowRoot) => {
+    if (visitedRoots.has(r)) return;
+    visitedRoots.add(r);
+
+    for (const v of Array.from(r.querySelectorAll('video'))) {
+      result.push(v as HTMLVideoElement);
+    }
+
+    discoverOpenShadowRoots(r);
+  };
+
+  scanRoot(document);
+
+  for (const sr of getKnownShadowRoots()) {
+    scanRoot(sr);
+  }
+
+  for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+    try {
+      const doc = iframe.contentDocument;
+      if (doc && !doc.getElementById('subany-extension-root')) {
+        scanRoot(doc);
+      }
+    } catch (_) { /* cross-origin */ }
+  }
+
+  cachedVideos = result;
+  lastVideoScanAt = now;
+  return result;
+}
+
 // Traverse DOM, Shadow DOM, and same-origin iframes.
 // NOTE: Only use outside hot paths. Never call this in a tick, timer,
 // or pointer handler on a large page.
@@ -115,10 +233,11 @@ export function getPreferredSubtitleLeaf(el: HTMLElement): HTMLElement {
 }
 
 export function getVideoContainingElement(element: HTMLElement): HTMLVideoElement | null {
+  const doc = element.ownerDocument || document;
   const er = element.getBoundingClientRect();
   let best: HTMLVideoElement | null = null;
   let bestOverlap = 0;
-  for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
+  for (const video of getAllVideos(doc)) {
     const vr = video.getBoundingClientRect();
     if (vr.width <= 0 || vr.height <= 0) continue;
     const overlapWidth = Math.max(0, Math.min(er.right, vr.right) - Math.max(er.left, vr.left));
@@ -135,12 +254,28 @@ export function getVideoContainingElement(element: HTMLElement): HTMLVideoElemen
 }
 
 export function getVideoForElement(element: HTMLElement): HTMLVideoElement | null {
+  const root = element.getRootNode();
+  if (root instanceof ShadowRoot) {
+    const direct = root.querySelector('video') as HTMLVideoElement | null;
+    if (direct) {
+      const dr = direct.getBoundingClientRect();
+      if (dr.width > 0 && dr.height > 0) return direct;
+    }
+  }
+
+  const doc = element.ownerDocument || document;
+  const directVideo = doc.querySelector('video') as HTMLVideoElement | null;
+  if (directVideo) {
+    const dr = directVideo.getBoundingClientRect();
+    if (dr.width > 0 && dr.height > 0) return directVideo;
+  }
+
   const er = element.getBoundingClientRect();
   if (er.width <= 0 || er.height <= 0) return null;
 
   let best: HTMLVideoElement | null = null;
   let bestOverlap = 0;
-  for (const video of Array.from(document.querySelectorAll('video')) as HTMLVideoElement[]) {
+  for (const video of getAllVideos(doc)) {
     const vr = video.getBoundingClientRect();
     if (vr.width <= 0 || vr.height <= 0) continue;
     const overlapWidth = Math.max(0, Math.min(er.right, vr.right) - Math.max(er.left, vr.left));
@@ -218,23 +353,24 @@ export function generateUniqueSelector(element: HTMLElement): string {
     return `#${escape(element.id)}`;
   }
 
+  const doc = element.ownerDocument || document;
   const directSubtitleClasses = Array.from(element.classList).filter((name) =>
     /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
   );
   if (directSubtitleClasses.length > 0) {
     const classOnly = '.' + directSubtitleClasses.map(escape).join('.');
     try {
-      if (document.querySelectorAll(classOnly).length === 1) return classOnly;
+      if (doc.querySelectorAll(classOnly).length === 1) return classOnly;
     } catch (_) { }
     const tagAndClass = element.tagName.toLowerCase() + classOnly;
     try {
-      if (document.querySelectorAll(tagAndClass).length === 1) return tagAndClass;
+      if (doc.querySelectorAll(tagAndClass).length === 1) return tagAndClass;
     } catch (_) { }
   }
 
   const path: string[] = [];
   let current: HTMLElement | null = element;
-  while (current && current !== document.body && current !== document.documentElement) {
+  while (current && current !== doc.body && current !== doc.documentElement) {
     let selector = current.tagName.toLowerCase();
     const subtitleClass = Array.from(current.classList).find((name) =>
       /(caption|subtitles?|cue|timedtext|lyrics|karaoke|dual)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
@@ -347,20 +483,28 @@ export function findVideoAtPoint(
   clientX: number,
   clientY: number,
   clickTarget?: HTMLElement | null,
+  targetDoc?: Document,
 ): HTMLVideoElement | null {
+  const doc = targetDoc ?? clickTarget?.ownerDocument ?? document;
   if (clickTarget) {
-    let cur: HTMLElement | null = clickTarget;
-    while (cur && cur !== document.body && cur !== document.documentElement) {
-      if (cur.tagName.toLowerCase() === 'video') {
-        return cur as HTMLVideoElement;
+    let cur: Node | null = clickTarget;
+    while (cur && cur !== doc.body && cur !== doc.documentElement) {
+      if (cur instanceof HTMLElement) {
+        if (cur.tagName.toLowerCase() === 'video') {
+          return cur as HTMLVideoElement;
+        }
+        const v = cur.querySelector('video');
+        if (v) return v as HTMLVideoElement;
       }
-      const v = cur.querySelector('video');
-      if (v) return v as HTMLVideoElement;
-      cur = cur.parentElement;
+      if (cur instanceof ShadowRoot) {
+        cur = cur.host;
+      } else {
+        cur = cur.parentNode;
+      }
     }
   }
 
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  const videos = getAllVideos(doc);
   return (
     videos.find((v) => {
       const region = getSubtitleAcceptanceRegion(v);
@@ -434,7 +578,8 @@ export function isPlausibleSubtitleLeaf(
  * Measures the on-screen glyph bounds of all non-UI text nodes inside root.
  */
 export function measureGlyphBounds(root: Element): DOMRect | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const text = node.nodeValue ?? '';
       if (!text.trim()) return NodeFilter.FILTER_REJECT;
@@ -454,7 +599,7 @@ export function measureGlyphBounds(root: Element): DOMRect | null {
 
   let node: Node | null;
   while ((node = walker.nextNode())) {
-    const range = document.createRange();
+    const range = doc.createRange();
     range.selectNodeContents(node);
     for (const r of Array.from(range.getClientRects())) {
       if (r.width <= 0 && r.height <= 0) continue;
@@ -561,21 +706,53 @@ export function resolveCaptionLineContainer(
  *
  * No class-name matching is required. No full-document scan.
  */
+export function getComposedElementsFromPoint(
+  clientX: number,
+  clientY: number,
+  targetDoc: Document = document,
+): HTMLElement[] {
+  const elements: HTMLElement[] = [];
+  const topStack = (targetDoc.elementsFromPoint
+    ? targetDoc.elementsFromPoint(clientX, clientY)
+    : []) as HTMLElement[];
+
+  for (const el of topStack) {
+    elements.push(el);
+    if (el.shadowRoot) {
+      knownShadowRoots.add(el.shadowRoot);
+      if (typeof el.shadowRoot.elementsFromPoint === 'function') {
+        const shadowStack = el.shadowRoot.elementsFromPoint(clientX, clientY) as HTMLElement[];
+        for (const sEl of shadowStack) {
+          elements.push(sEl);
+          if (sEl.shadowRoot) {
+            knownShadowRoots.add(sEl.shadowRoot);
+            if (typeof sEl.shadowRoot.elementsFromPoint === 'function') {
+              elements.push(...(sEl.shadowRoot.elementsFromPoint(clientX, clientY) as HTMLElement[]));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return elements;
+}
+
 export function getSubtitleElementAtPoint(
   clientX: number,
   clientY: number,
   clickTarget?: HTMLElement | null,
+  targetDoc?: Document,
 ): HTMLElement | null {
-  const video = findVideoAtPoint(clientX, clientY, clickTarget);
+  const doc = targetDoc ?? clickTarget?.ownerDocument ?? document;
+  const video = findVideoAtPoint(clientX, clientY, clickTarget, doc);
   if (!video) return null;
 
   const vr = video.getBoundingClientRect();
   if (vr.width <= 0 || vr.height <= 0) return null;
 
-  // ---- Path A: hit-stack fast path ----
-  const stack = (document.elementsFromPoint
-    ? document.elementsFromPoint(clientX, clientY)
-    : []) as HTMLElement[];
+  // ---- Path A: hit-stack fast path (composed into open shadow roots) ----
+  const stack = getComposedElementsFromPoint(clientX, clientY, doc);
 
   for (const el of stack) {
     if (!isPlausibleSubtitleLeaf(el, vr)) continue;
@@ -584,7 +761,8 @@ export function getSubtitleElementAtPoint(
   }
 
   // ---- Path B: geometric walk ----
-  const scope = video.parentElement?.parentElement ?? video.parentElement;
+  const rootNode = video.getRootNode();
+  const scope = video.parentElement?.parentElement ?? video.parentElement ?? (rootNode instanceof ShadowRoot ? (rootNode as ShadowRoot).firstElementChild as HTMLElement | null : null);
   if (!scope) return null;
 
   let best: HTMLElement | null = null;

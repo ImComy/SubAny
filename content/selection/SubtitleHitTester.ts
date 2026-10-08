@@ -25,10 +25,10 @@ let lastHitKey = '';
 let lastHitResult: UniversalHit = EMPTY_HIT;
 let lastHitAt = 0;
 
-import { getSubtitleAcceptanceRegion } from '../../utils/dom';
+import { getSubtitleAcceptanceRegion, getAllVideos, composedContains, getComposedElementsFromPoint } from '../../utils/dom';
 
-function isInSubtitleBand(clientX: number, clientY: number): boolean {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+function isInSubtitleBand(clientX: number, clientY: number, targetDoc: Document = document): boolean {
+  const videos = getAllVideos(targetDoc);
   for (const video of videos) {
     const region = getSubtitleAcceptanceRegion(video);
     if (
@@ -48,7 +48,7 @@ function isInSubtitleBand(clientX: number, clientY: number): boolean {
  * shape and no one has to remember the return contract of
  * `getUniversalSubtitleHit`.
  */
-export function getHitAt(clientX: number, clientY: number): UniversalHit {
+export function getHitAt(clientX: number, clientY: number, targetDoc: Document = document): UniversalHit {
   const coarseX = Math.round(clientX / 8);
   const coarseY = Math.round(clientY / 8);
   const key = `${coarseX}:${coarseY}`;
@@ -58,14 +58,14 @@ export function getHitAt(clientX: number, clientY: number): UniversalHit {
     return lastHitResult;
   }
 
-  if (!isInSubtitleBand(clientX, clientY)) {
+  if (!isInSubtitleBand(clientX, clientY, targetDoc)) {
     lastHitKey = key;
     lastHitAt = now;
     lastHitResult = EMPTY_HIT;
     return EMPTY_HIT;
   }
 
-  const hit = getUniversalSubtitleHit(clientX, clientY);
+  const hit = getUniversalSubtitleHit(clientX, clientY, targetDoc);
   const finalHit = (!hit.element && !hit.native && !hit.video) ? EMPTY_HIT : hit;
 
   lastHitKey = key;
@@ -90,7 +90,9 @@ export function getHitAt(clientX: number, clientY: number): UniversalHit {
 export function isOverActiveContainer(state: ContentState, e: MouseEvent): boolean {
   const container = state.activeContainerEl;
   if (!container) return false;
-  if (container.contains(e.target as Node)) return true;
+
+  const target = (e.composedPath?.()[0] as Node | null) ?? (e.target as Node | null);
+  if (target && (container === target || composedContains(container, target))) return true;
 
   const rect = container.getBoundingClientRect();
   if (
@@ -102,9 +104,7 @@ export function isOverActiveContainer(state: ContentState, e: MouseEvent): boole
     return true;
   }
 
-  const stack = (document.elementsFromPoint
-    ? document.elementsFromPoint(e.clientX, e.clientY)
-    : []) as HTMLElement[];
+  const stack = getComposedElementsFromPoint(e.clientX, e.clientY);
 
-  return stack.some((el) => el === container || container.contains(el));
+  return stack.some((el) => el === container || composedContains(container, el));
 }

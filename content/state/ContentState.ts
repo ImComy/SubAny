@@ -56,6 +56,11 @@ export class ContentState {
   lockedPositionObserver: ResizeObserver | null = null;
   lockedPositionEventTarget: HTMLElement | null = null;
   lockedPositionEventHandler: ((event: Event) => void) | null = null;
+  lockedPositionRafId: number | null = null;
+  lockedPositionKey = '';
+  lockedLastNotifiedText = '';
+  lockedLastScanAt = 0;
+  lockedVideoBindings: import('./types').LockedVideoEventBinding[] = [];
   lastLockedRect: DOMRect | null = null;
 
   // Auto-tracking.

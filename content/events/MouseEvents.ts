@@ -12,6 +12,9 @@ import {
   handleInteractiveClick,
   type InteractiveTranslationDeps,
 } from '../translation/InteractiveTranslationController';
+import { clearInteractiveTranslation } from '../translation/TranslationState';
+
+import { getAllVideos, registerComposedShadowRoots } from '../../utils/dom';
 
 export interface MouseEventsDeps {
   selection: SelectionDeps;
@@ -22,8 +25,8 @@ export interface MouseEventsHandle {
   dispose: () => void;
 }
 
-function isPointerInsideVideo(clientX: number, clientY: number): boolean {
-  const videos = document.querySelectorAll('video');
+function isPointerInsideVideo(clientX: number, clientY: number, doc: Document = document): boolean {
+  const videos = getAllVideos(doc);
   for (const video of videos) {
     const rect = video.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
@@ -59,6 +62,8 @@ function isPointerInsideVideo(clientX: number, clientY: number): boolean {
 export function startMouseEvents(
   state: ContentState,
   deps: MouseEventsDeps,
+  doc: Document = document,
+  win: Window = window,
 ): MouseEventsHandle {
   let interactiveRaf: number | null = null;
   let pendingInteractiveMove: MouseEvent | null = null;
@@ -79,21 +84,22 @@ export function startMouseEvents(
   const syncInteractiveListeners = () => {
     const shouldAttach = shouldListenForInteractive();
     if (shouldAttach && !interactiveAttached) {
-      document.addEventListener('mousemove', onInteractiveMove);
-      document.addEventListener('click', onInteractiveClick);
+      doc.addEventListener('mousemove', onInteractiveMove);
+      doc.addEventListener('click', onInteractiveClick);
       interactiveAttached = true;
       return;
     }
 
     if (!shouldAttach && interactiveAttached) {
-      document.removeEventListener('mousemove', onInteractiveMove);
-      document.removeEventListener('click', onInteractiveClick);
+      doc.removeEventListener('mousemove', onInteractiveMove);
+      doc.removeEventListener('click', onInteractiveClick);
       interactiveAttached = false;
     }
   };
 
   const onSelectionMove = (e: MouseEvent) => {
-    if (!isPointerInsideVideo(e.clientX, e.clientY)) return;
+    registerComposedShadowRoots(e);
+    if (!isPointerInsideVideo(e.clientX, e.clientY, doc)) return;
 
     // Click-only selection: never run subtitle scanning on every mouse move.
     // This avoids the YouTube CPU spike while still letting the click handler
@@ -110,11 +116,13 @@ export function startMouseEvents(
   };
 
   const onSelectionClickCapture = (e: MouseEvent) => {
-    if (!isPointerInsideVideo(e.clientX, e.clientY)) return;
+    registerComposedShadowRoots(e);
+    if (!isPointerInsideVideo(e.clientX, e.clientY, doc)) return;
     handleSelectionClick(state, deps.selection, e);
   };
   const onSelectionContext = (e: MouseEvent) => {
-    if (!isPointerInsideVideo(e.clientX, e.clientY)) return;
+    registerComposedShadowRoots(e);
+    if (!isPointerInsideVideo(e.clientX, e.clientY, doc)) return;
     handleSelectionContextMenu(state, deps.selection, e);
   };
 
@@ -128,7 +136,8 @@ export function startMouseEvents(
   };
 
   const onInteractiveMove = (e: MouseEvent) => {
-    if (!isPointerInsideVideo(e.clientX, e.clientY)) return;
+    registerComposedShadowRoots(e);
+    if (!isPointerInsideVideo(e.clientX, e.clientY, doc)) return;
 
     const now = performance.now();
     const dx = Math.abs(e.clientX - lastInteractiveMoveX);
@@ -144,37 +153,46 @@ export function startMouseEvents(
 
     pendingInteractiveMove = e;
     if (interactiveRaf !== null) return;
-    interactiveRaf = window.requestAnimationFrame(flushInteractiveMove);
+    interactiveRaf = win.requestAnimationFrame(flushInteractiveMove);
   };
 
   const onInteractiveClick = (e: MouseEvent) => {
-    if (!isPointerInsideVideo(e.clientX, e.clientY)) return;
+    if (!isPointerInsideVideo(e.clientX, e.clientY, doc)) return;
     if (!shouldListenForInteractive()) return;
     handleInteractiveClick(state, deps.interactive, e);
     syncInteractiveListeners();
   };
 
+  const onMouseLeave = () => {
+    if (state.hoveredWordRect || state.tooltipState) {
+      clearInteractiveTranslation(state);
+      state.notify();
+    }
+  };
+  doc.addEventListener('mouseleave', onMouseLeave);
+
   // Selection set — window capture.
-  window.addEventListener('mousemove', onSelectionMove, true);
-  window.addEventListener('click', onSelectionClickCapture, true);
-  window.addEventListener('contextmenu', onSelectionContext, true);
+  win.addEventListener('mousemove', onSelectionMove, true);
+  win.addEventListener('click', onSelectionClickCapture, true);
+  win.addEventListener('contextmenu', onSelectionContext, true);
 
   syncInteractiveListeners();
 
   return {
     dispose: () => {
       if (interactiveRaf !== null) {
-        window.cancelAnimationFrame(interactiveRaf);
+        win.cancelAnimationFrame(interactiveRaf);
         interactiveRaf = null;
       }
       pendingInteractiveMove = null;
 
-      window.removeEventListener('mousemove', onSelectionMove, true);
-      window.removeEventListener('click', onSelectionClickCapture, true);
-      window.removeEventListener('contextmenu', onSelectionContext, true);
+      win.removeEventListener('mousemove', onSelectionMove, true);
+      win.removeEventListener('click', onSelectionClickCapture, true);
+      win.removeEventListener('contextmenu', onSelectionContext, true);
 
-      document.removeEventListener('mousemove', onInteractiveMove);
-      document.removeEventListener('click', onInteractiveClick);
+      doc.removeEventListener('mousemove', onInteractiveMove);
+      doc.removeEventListener('click', onInteractiveClick);
+      doc.removeEventListener('mouseleave', onMouseLeave);
       interactiveAttached = false;
     },
   };

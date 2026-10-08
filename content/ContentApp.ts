@@ -6,7 +6,7 @@ import { TranslationManager } from '../lib/TranslationManager';
 import { VideoController } from '../lib/VideoController';
 
 import { ContentState } from './state/ContentState';
-import type { LockedSubtitleAnchor } from './state/types';
+import type { LockedSubtitleAnchor, TooltipState } from './state/types';
 import { DomTextSwapper } from './replacement/DomTextSwapper';
 
 import { reattachLockedContainer, startLockedMonitor, stopLockedMonitor } from './locking/LockMonitor';
@@ -30,6 +30,7 @@ import { startMouseEvents } from './events/MouseEvents';
 import { startKeyboardEvents } from './events/KeyboardEvents';
 import { startStorageEvents } from './events/StorageEvents';
 import { startRuntimeMessages } from './events/RuntimeMessages';
+import { startDomObserver } from './events/DomObserver';
 
 import { startVideoMonitor, stopVideoMonitor } from './video/VideoMonitor';
 import { VideoOverlayController } from './video/VideoOverlayController';
@@ -38,6 +39,11 @@ import { ExtensionRoot } from './ui/ExtensionRoot';
 import { ContentRenderer } from './ui/ContentRenderer';
 import { SubtitleTrackController } from './subtitles/SubtitleTrackController';
 import type { SubtitleTrack } from './subtitles/types';
+import { getAllVideos } from '../utils/dom';
+
+export interface ContentAppOptions {
+  onTooltipChange?: (tooltip: TooltipState | null, isTranslating: boolean) => void;
+}
 
 /**
  * Top-level orchestrator for the content script.
@@ -62,6 +68,13 @@ import type { SubtitleTrack } from './subtitles/types';
  *   events/*                – listeners with `dispose()` handles
  */
 export class ContentApp {
+  private readonly doc: Document;
+  private readonly win: Window;
+  private readonly isTopFrame: boolean;
+  private readonly options?: ContentAppOptions;
+  private readonly childApps = new Map<HTMLIFrameElement, ContentApp>();
+  private activeChildIframeTooltip: HTMLIFrameElement | null = null;
+
   private readonly state: ContentState;
   private readonly extensionRoot: ExtensionRoot;
   private readonly renderer: ContentRenderer;
@@ -87,25 +100,50 @@ export class ContentApp {
   private autoLeaseTimer: number | null = null;
   private autoElectionRetryTimer: number | null = null;
 
-  constructor() {
+  constructor(
+    doc: Document = document,
+    win: Window = window,
+    isTopFrame: boolean = (typeof window !== 'undefined' && win === window.top),
+    options?: ContentAppOptions,
+  ) {
+    this.doc = doc;
+    this.win = win;
+    this.isTopFrame = isTopFrame;
+    this.options = options;
+
     this.state = new ContentState();
-    this.extensionRoot = new ExtensionRoot();
+    this.extensionRoot = new ExtensionRoot(this.doc);
 
     this.subtitleManager = new SubtitleManager();
     this.translationManager = new TranslationManager();
-    this.videoController = new VideoController();
+    this.videoController = new VideoController(this.doc);
     this.domSwapper = new DomTextSwapper();
     this.overlayController = new VideoOverlayController(this.videoController);
-    this.subtitleTrackController = new SubtitleTrackController(this.state);
+    this.subtitleTrackController = new SubtitleTrackController(this.state, this.doc);
 
     this.renderer = new ContentRenderer(this.state, this.extensionRoot, {
       onUnlock: () => { void this.unlockContainer(); },
+      delegateTooltip: !this.isTopFrame,
     });
 
     // Every controller calls `state.notify()` — that must redraw the React
     // tree. Setting the hook here means no controller has to know about
     // ContentRenderer.
-    this.state.onRender = () => this.renderer.render();
+    this.state.onRender = () => {
+      if (this.options?.onTooltipChange) {
+        this.options.onTooltipChange(this.state.tooltipState, this.state.isTranslating);
+      }
+      if (!this.isTopFrame && typeof window !== 'undefined' && window.parent && window.parent !== window) {
+        try {
+          window.parent.postMessage({
+            type: 'SUBANY_CHILD_TOOLTIP',
+            tooltip: this.state.tooltipState,
+            isTranslating: this.state.isTranslating,
+          }, '*');
+        } catch (_) {}
+      }
+      this.renderer.render();
+    };
 
     this.subtitleTranslationDeps = {
       translationManager: this.translationManager,
@@ -121,7 +159,7 @@ export class ContentApp {
       state: this.state,
       domSwapper: this.domSwapper,
       subtitleTranslation: this.subtitleTranslationDeps,
-    });
+    }, this.doc);
 
     this.lockController = new LockController({
       state: this.state,
@@ -129,7 +167,7 @@ export class ContentApp {
       domSwapper: this.domSwapper,
       triggerGlow: (el) => this.triggerGlow(el),
       stopAutoDetection: () => this.autoDetect.stop(),
-      startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }),
+      startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }, this.doc),
       stopVideoMonitor: () => stopVideoMonitor(),
       handleSubtitleTextChange: (text) => handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text),
     });
@@ -146,7 +184,7 @@ export class ContentApp {
           void this.ensureAutoDetectionLease();
         }
       },
-      startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }),
+      startVideoMonitor: () => startVideoMonitor(this.state, { onMediaTick: () => this.tick() }, this.doc),
       stopVideoMonitor: () => stopVideoMonitor(),
     };
   }
@@ -167,44 +205,89 @@ export class ContentApp {
     this.handles.push(startMouseEvents(s, {
       selection: this.selectionDeps,
       interactive: this.interactiveDeps,
-    }));
+    }, this.doc, this.win));
     this.handles.push(startKeyboardEvents(s, {
       selection: this.selectionDeps,
       interactive: this.interactiveDeps,
-    }));
+    }, this.doc, this.win));
     this.handles.push(startStorageEvents(s, {
       onSettingsChanged: (next) => this.handleSettingsChanged(next),
-      onSubtitleTrackChanged: (track) => this.subtitleTrackController.apply(track),
+      onSubtitleTrackChanged: (track) => this.applySubtitle(track),
     }));
     this.handles.push(startRuntimeMessages(s, {
       onStartSelection: () => {
-        // Only the frame that actually contains a sized <video> owns
-        // selection mode. Other frames (top frame of an embedded player,
-        // unrelated iframes) decline the message.
-        if (this.canOwnSelectionFrame()) startSelection(s, this.selectionDeps);
+        this.startSelection();
       },
-      onResetSelection: () => { void this.unlockContainer(); },
-      onApplySubtitle: (track) => this.subtitleTrackController.apply(track),
+      onResetSelection: () => {
+        this.resetSelection();
+      },
+      onApplySubtitle: (track) => this.applySubtitle(track),
     }));
 
-    window.addEventListener('resize', this.onResize, { passive: true });
-    window.addEventListener('scroll', this.onResize, { passive: true, capture: true });
+    this.win.addEventListener('resize', this.onResize, { passive: true });
+    this.win.addEventListener('scroll', this.onResize, { passive: true, capture: true });
+
+    if (this.isTopFrame) {
+      const onWindowMessage = (event: MessageEvent) => {
+        if (!event.data || event.data.type !== 'SUBANY_CHILD_TOOLTIP') return;
+        let sourceIframe: HTMLIFrameElement | null = null;
+        try {
+          const iframes = Array.from(this.doc.querySelectorAll('iframe'));
+          sourceIframe = iframes.find((f) => f.contentWindow === event.source) ?? null;
+        } catch (_) {}
+        if (!sourceIframe) return;
+
+        const { tooltip, isTranslating } = event.data;
+        if (!tooltip) {
+          if (this.activeChildIframeTooltip === sourceIframe) {
+            this.activeChildIframeTooltip = null;
+            this.state.tooltipState = null;
+            this.state.isTranslating = false;
+            this.state.notify();
+          }
+          return;
+        }
+
+        this.activeChildIframeTooltip = sourceIframe;
+        const rect = sourceIframe.getBoundingClientRect();
+        this.state.tooltipState = {
+          ...tooltip,
+          x: rect.left + tooltip.x,
+          y: rect.top + tooltip.y,
+        };
+        this.state.isTranslating = !!isTranslating;
+        this.state.notify();
+      };
+
+      this.win.addEventListener('message', onWindowMessage);
+      this.handles.push({
+        dispose: () => this.win.removeEventListener('message', onWindowMessage),
+      });
+    }
 
     this.renderer.render();
 
     await this.loadSettings();
+
+    this.syncDomObserver();
+    this.syncSameOriginIframes();
   }
 
   dispose(): void {
     cancelInteractiveHover();
 
     if (this.glowTimer !== null) {
-      window.clearTimeout(this.glowTimer);
+      this.win.clearTimeout(this.glowTimer);
       this.glowTimer = null;
     }
 
-    window.removeEventListener('resize', this.onResize);
-    window.removeEventListener('scroll', this.onResize, true);
+    this.win.removeEventListener('resize', this.onResize);
+    this.win.removeEventListener('scroll', this.onResize, true);
+
+    for (const child of this.childApps.values()) {
+      child.dispose();
+    }
+    this.childApps.clear();
 
     for (const handle of this.handles.reverse()) {
       try { handle.dispose(); } catch (_) { /* ignore */ }
@@ -223,11 +306,132 @@ export class ContentApp {
     this.extensionRoot.dispose();
   }
 
+  getDoc(): Document {
+    return this.doc;
+  }
+
+  getWin(): Window {
+    return this.win;
+  }
+
+  startSelection(): void {
+    this.syncSameOriginIframes();
+    if (this.canOwnSelectionFrame()) {
+      startSelection(this.state, this.selectionDeps);
+    }
+    for (const child of this.childApps.values()) {
+      child.startSelection();
+    }
+  }
+
+  resetSelection(): void {
+    void this.unlockContainer();
+    for (const child of this.childApps.values()) {
+      child.resetSelection();
+    }
+  }
+
+  applySubtitle(track: SubtitleTrack): void {
+    this.subtitleTrackController.apply(track);
+    for (const child of this.childApps.values()) {
+      child.applySubtitle(track);
+    }
+  }
+
+  private syncSameOriginIframes(): void {
+    if (!this.isTopFrame) return;
+
+    let iframes: HTMLIFrameElement[] = [];
+    try {
+      iframes = Array.from(this.doc.querySelectorAll('iframe'));
+    } catch (_) {
+      return;
+    }
+
+    const currentIframes = new Set(iframes);
+
+    // 1. Clean up removed iframes
+    for (const [iframe, childApp] of Array.from(this.childApps.entries())) {
+      if (!iframe.isConnected || !currentIframes.has(iframe)) {
+        childApp.dispose();
+        this.childApps.delete(iframe);
+      }
+    }
+
+    // 2. Discover same-origin iframes
+    for (const iframe of iframes) {
+      try {
+        const childDoc = iframe.contentDocument;
+        const childWin = iframe.contentWindow;
+        if (!childDoc || !childWin) continue;
+
+        const attachChild = () => {
+          try {
+            const doc = iframe.contentDocument;
+            const win = iframe.contentWindow;
+            if (!doc || !win || !iframe.isConnected) return;
+            if (!doc.body && !doc.documentElement) return;
+            if (doc.getElementById('subany-extension-root')) return;
+
+            const existing = this.childApps.get(iframe);
+            if (existing) {
+              if (existing.getDoc() === doc) return;
+              existing.dispose();
+              this.childApps.delete(iframe);
+            }
+
+            const childApp = new ContentApp(doc, win, false, {
+              onTooltipChange: (childTooltip, isTranslating) => {
+                if (!childTooltip) {
+                  if (this.activeChildIframeTooltip === iframe) {
+                    this.activeChildIframeTooltip = null;
+                    this.state.tooltipState = null;
+                    this.state.isTranslating = false;
+                    this.state.notify();
+                  }
+                  return;
+                }
+
+                this.activeChildIframeTooltip = iframe;
+                const rect = iframe.getBoundingClientRect();
+                this.state.tooltipState = {
+                  ...childTooltip,
+                  x: rect.left + childTooltip.x,
+                  y: rect.top + childTooltip.y,
+                };
+                this.state.isTranslating = isTranslating;
+                this.state.notify();
+              },
+            });
+            this.childApps.set(iframe, childApp);
+            void childApp.start();
+          } catch (_) {}
+        };
+
+        const anyIframe = iframe as any;
+        if (!anyIframe.__subanySyncBound) {
+          anyIframe.__subanySyncBound = true;
+          iframe.addEventListener('load', () => {
+            this.syncSameOriginIframes();
+          });
+          iframe.addEventListener('pointerenter', () => {
+            this.syncSameOriginIframes();
+          }, { passive: true });
+        }
+
+        attachChild();
+      } catch (_) {
+        // Cross-origin iframe (Access denied) - browser extension handles per-frame
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Public surface used by events/* callbacks
   // ---------------------------------------------------------------------
 
   private tick(): void {
+    if (this.isTopFrame) this.syncSameOriginIframes();
     runTrackingTick({
       state: this.state,
       domSwapper: this.domSwapper,
@@ -253,7 +457,12 @@ export class ContentApp {
 
   private syncDomObserver(): void {
     this.domObserverHandle?.dispose();
-    this.domObserverHandle = null;
+    this.domObserverHandle = startDomObserver(this.state, {
+      onDomChange: () => {
+        this.syncSameOriginIframes();
+        this.tick();
+      },
+    }, this.doc);
   }
 
   private async loadSettings(): Promise<void> {
@@ -285,8 +494,10 @@ export class ContentApp {
     this.syncDomObserver();
 
     if (s.settings.lockedSelector) {
-      startVideoMonitor(s, { onMediaTick: () => this.tick() });
-      startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
+      if (this.canOwnSelectionFrame()) {
+        startVideoMonitor(s, { onMediaTick: () => this.tick() }, this.doc);
+        startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
+      }
     } else if (!s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) {
       void this.ensureAutoDetectionLease();
     }
@@ -316,8 +527,10 @@ export class ContentApp {
     if (s.settings.lockedSelector) {
       this.releaseAutoDetectionLease();
       this.autoDetect.stop();
-      startVideoMonitor(s, { onMediaTick: () => this.tick() });
-      startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
+      if (this.canOwnSelectionFrame()) {
+        startVideoMonitor(s, { onMediaTick: () => this.tick() }, this.doc);
+        startLockedMonitor(s, (text) => void handleSubtitleTextChange(this.state, this.subtitleTranslationDeps, text));
+      }
     } else {
       stopLockedMonitor(s);
       if (s.autoDetectionRequested && !s.autoDetectionDisabled && s.isAutomaticSubtitleMode()) void this.ensureAutoDetectionLease();
@@ -328,6 +541,10 @@ export class ContentApp {
     s.notify();
     this.syncActiveContainer();
     this.syncDomObserver();
+
+    for (const child of this.childApps.values()) {
+      child.handleSettingsChanged(next);
+    }
   }
 
   private syncActiveContainer(): void {
@@ -335,6 +552,7 @@ export class ContentApp {
 
     if (s.settings.lockedSelector) {
       this.releaseAutoDetectionLease();
+      if (!this.canOwnSelectionFrame()) return;
       const reattached = reattachLockedContainer(s);
       if (reattached) {
         this.autoDetect.stop();
@@ -363,8 +581,8 @@ export class ContentApp {
     s.glowTargetEl = el;
     s.notify();
 
-    if (this.glowTimer !== null) window.clearTimeout(this.glowTimer);
-    this.glowTimer = window.setTimeout(() => {
+    if (this.glowTimer !== null) this.win.clearTimeout(this.glowTimer);
+    this.glowTimer = this.win.setTimeout(() => {
       if (s.glowTargetEl === el) {
         s.glowTargetEl = null;
         s.notify();
@@ -393,8 +611,9 @@ export class ContentApp {
    * Runs once per START_SELECTION broadcast, not on any hot path.
    */
   private canOwnSelectionFrame(): boolean {
-    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    const videos = getAllVideos(this.doc);
     return videos.some((video) => {
+      if (video.ownerDocument !== this.doc) return false;
       const rect = video.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     });
@@ -416,7 +635,7 @@ export class ContentApp {
       if (!response?.granted) {
         this.autoDetect.stop();
         if (this.autoElectionRetryTimer === null) {
-          this.autoElectionRetryTimer = window.setTimeout(() => {
+          this.autoElectionRetryTimer = this.win.setTimeout(() => {
             this.autoElectionRetryTimer = null;
             void this.ensureAutoDetectionLease();
           }, 1200);
@@ -424,7 +643,7 @@ export class ContentApp {
         return;
       }
       this.autoDetectionElected = true;
-      this.autoLeaseTimer = window.setInterval(() => {
+      this.autoLeaseTimer = this.win.setInterval(() => {
         void this.renewAutoDetectionLease();
       }, 1000);
       this.autoDetect.start();
@@ -448,11 +667,11 @@ export class ContentApp {
 
   private releaseAutoDetectionLease(): void {
     if (this.autoLeaseTimer !== null) {
-      window.clearInterval(this.autoLeaseTimer);
+      this.win.clearInterval(this.autoLeaseTimer);
       this.autoLeaseTimer = null;
     }
     if (this.autoElectionRetryTimer !== null) {
-      window.clearTimeout(this.autoElectionRetryTimer);
+      this.win.clearTimeout(this.autoElectionRetryTimer);
       this.autoElectionRetryTimer = null;
     }
     if (!this.autoDetectionElected) return;

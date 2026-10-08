@@ -1,12 +1,19 @@
+import { getAllVideos } from '../utils/dom';
+
 export class VideoController {
+  private readonly doc: Document;
   private resumeTimer: number | null = null;
   private wasPlayingBeforeHover = false;
+
+  constructor(doc: Document = document) {
+    this.doc = doc;
+  }
 
   /**
    * Find the most relevant <video> element on the page
    */
   getActiveVideo(): HTMLVideoElement | null {
-    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    const videos = getAllVideos(this.doc);
     if (videos.length === 0) return null;
 
     // Prefer currently playing video

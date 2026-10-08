@@ -39,11 +39,13 @@ export class AutoDetectController {
   private readonly state: ContentState;
   private readonly domSwapper: DomTextSwapper;
   private readonly translation: SubtitleTranslationDeps;
+  private readonly doc: Document;
 
-  constructor(deps: AutoDetectDeps) {
+  constructor(deps: AutoDetectDeps, doc: Document = document) {
     this.state = deps.state;
     this.domSwapper = deps.domSwapper;
     this.translation = deps.subtitleTranslation;
+    this.doc = doc;
   }
 
   start(): void {
@@ -90,7 +92,7 @@ export class AutoDetectController {
     if (s.autoDetectionDisabled || s.settings.lockedSelector || !s.isAutomaticSubtitleMode()) return;
 
     const now = performance.now();
-    const candidates = collectAutoSubtitleCandidates();
+    const candidates = collectAutoSubtitleCandidates(this.doc);
 
     for (const candidate of candidates) {
       upsertTrack(s.autoTracks, candidate, now);
@@ -102,7 +104,7 @@ export class AutoDetectController {
 
     // Native TextTrack branch. Independent of DOM candidate tracking, and
     // never converted into a fake DOM lock.
-    const nativeHit = findCurrentNativeAutoCue();
+    const nativeHit = findCurrentNativeAutoCue(this.doc);
     if (nativeHit && !best) {
       s.activeContainerEl = null;
       s.autoDetectedElement = null;
@@ -125,7 +127,7 @@ export class AutoDetectController {
     }
 
     const element = best.element;
-    if (!element || !document.documentElement.contains(element)) return;
+    if (!element || !element.isConnected) return;
 
     const bestVideoRect = best.video?.getBoundingClientRect() ?? null;
     if (

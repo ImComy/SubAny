@@ -61,7 +61,7 @@ export function createLockedAnchor(element: HTMLElement): LockedSubtitleAnchor |
  * Returns '' when the element is gone or empty.
  */
 export function getCurrentLockedText(element: HTMLElement | null): string {
-  if (!element || !document.documentElement.contains(element)) return '';
+  if (!element || !element.isConnected) return '';
   return normalizeSubtitleText(element.textContent || '');
 }
 
@@ -74,7 +74,7 @@ export function getCurrentLockedText(element: HTMLElement | null): string {
  * wrapper survives but is no longer a valid subtitle.
  */
 export function isHealthyLockedElement(element: HTMLElement | null): boolean {
-  if (!element || !document.documentElement.contains(element)) return false;
+  if (!element || !element.isConnected) return false;
 
   const text = getCurrentLockedText(element);
   // An empty container between dialogue lines is normal. Only reject if text is present but not subtitle text.
@@ -138,14 +138,5 @@ export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect 
 
 export function isLockedElementConnected(element: HTMLElement | null): boolean {
   if (!element) return false;
-  let curr: Node | null = element;
-  while (curr) {
-    if (curr === document.documentElement) return true;
-    if (curr instanceof ShadowRoot) {
-      curr = curr.host;
-    } else {
-      curr = curr.parentNode;
-    }
-  }
-  return false;
+  return element.isConnected;
 }

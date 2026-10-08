@@ -1,7 +1,7 @@
 // detection/NativeSubtitleDetector.ts
 
 import { cueToPlainText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
-import { getSubtitleAcceptanceRegion, getVideoSubtitleRect, isPointInRectWithPadding } from '../../utils/dom';
+import { getSubtitleAcceptanceRegion, getVideoSubtitleRect, isPointInRectWithPadding, getAllVideos } from '../../utils/dom';
 
 export interface NativeSubtitleHit {
   text: string;
@@ -24,8 +24,8 @@ export function prepareNativeTextTrack(track: TextTrack): void {
   } catch (_) { /* read-only or unusual TextTrack */ }
 }
 
-export function findNativeSubtitleAtPoint(clientX: number, clientY: number): NativeSubtitleHit | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+export function findNativeSubtitleAtPoint(clientX: number, clientY: number, targetDoc: Document = document): NativeSubtitleHit | null {
+  const videos = getAllVideos(targetDoc);
 
   for (const video of videos) {
     const videoRect = video.getBoundingClientRect();
@@ -198,8 +198,8 @@ export function findActiveNativeSubtitleForVideo(
   return null;
 }
 
-export function isLikelySubtitleZone(clientX: number, clientY: number): HTMLVideoElement | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+export function isLikelySubtitleZone(clientX: number, clientY: number, targetDoc: Document = document): HTMLVideoElement | null {
+  const videos = getAllVideos(targetDoc);
   for (const video of videos) {
     const region = getSubtitleAcceptanceRegion(video);
     if (
@@ -214,8 +214,8 @@ export function isLikelySubtitleZone(clientX: number, clientY: number): HTMLVide
   return null;
 }
 
-export function findCurrentNativeAutoCue(): NativeSubtitleHit | null {
-  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+export function findCurrentNativeAutoCue(targetDoc: Document = document): NativeSubtitleHit | null {
+  const videos = getAllVideos(targetDoc);
   for (const video of videos) {
     const vr = video.getBoundingClientRect();
     if (vr.width <= 0 || vr.height <= 0) continue;
