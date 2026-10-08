@@ -3,6 +3,7 @@
 import type { ContentState } from '../state/ContentState';
 import { getHitAt, type UniversalHit } from './SubtitleHitTester';
 import { getSubtitleElementAtPoint, getVideoForElement, getSubtitleAcceptanceRegion, isPlausibleSubtitleLeaf, resolveCaptionLineContainer } from '../../utils/dom';
+import { combineSubtitleLines } from '../detection/SubtitleGrouping';
 import { resolveStableContainer } from '../locking/LockMonitor';
 
 /**
@@ -197,6 +198,11 @@ export function handleSelectionMouseMove(state: ContentState, e: MouseEvent): vo
   // preview matches what the click will install.
   let candidate = getSubtitleElementAtPoint(e.clientX, e.clientY, null);
   if (!candidate) candidate = findCaptionElementAtPoint(e.clientX, e.clientY);
+  if (candidate) {
+    const video = getVideoForElement(candidate);
+    const videoRect = video?.getBoundingClientRect() ?? null;
+    candidate = combineSubtitleLines(candidate, videoRect);
+  }
 
   if (candidate !== state.selectionCandidateEl) {
     state.selectionCandidateEl = candidate;
@@ -253,7 +259,8 @@ export function handleSelectionClick(
     const video = getVideoForElement(clickedLeaf);
     const videoRect = video?.getBoundingClientRect() ?? null;
     const lineTarget = resolveCaptionLineContainer(clickedLeaf, videoRect);
-    const container = resolveStableContainer(lineTarget, videoRect);
+    const groupTarget = combineSubtitleLines(lineTarget, videoRect);
+    const container = resolveStableContainer(groupTarget, videoRect);
 
     state.isSelecting = false;
     state.selectionCandidateEl = null;

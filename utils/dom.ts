@@ -237,7 +237,7 @@ export function generateUniqueSelector(element: HTMLElement): string {
   while (current && current !== document.body && current !== document.documentElement) {
     let selector = current.tagName.toLowerCase();
     const subtitleClass = Array.from(current.classList).find((name) =>
-      /(caption|subtitle|cue|timedtext)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
+      /(caption|subtitles?|cue|timedtext|lyrics|karaoke|dual)/i.test(name) && !name.startsWith('subany-') && !/\d/.test(name)
     );
     const primaryClass = subtitleClass || Array.from(current.classList).find((name) =>
       !/^(hover|active|selected|focus)$/.test(name) && !name.startsWith('subany-') && !/\d/.test(name)

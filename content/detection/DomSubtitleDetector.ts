@@ -2,6 +2,7 @@
 
 import {
   getSubtitleElementAtPoint,
+  getVideoForElement,
   resolveCaptionLineContainer,
 } from '../../utils/dom';
 import { isSubtitleText } from '../../utils/text';
@@ -31,7 +32,10 @@ export function findGenuineSubtitleCandidate(
   clientY: number,
   clickTarget?: HTMLElement | null,
 ): HTMLElement | null {
-  return getSubtitleElementAtPoint(clientX, clientY, clickTarget);
+  const el = getSubtitleElementAtPoint(clientX, clientY, clickTarget);
+  if (!el) return null;
+  const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
+  return combineSubtitleLines(el, vr);
 }
 
 /**
@@ -41,7 +45,10 @@ export function findSubtitleByGeometry(
   clientX: number,
   clientY: number,
 ): HTMLElement | null {
-  return getSubtitleElementAtPoint(clientX, clientY);
+  const el = getSubtitleElementAtPoint(clientX, clientY);
+  if (!el) return null;
+  const vr = getVideoForElement(el)?.getBoundingClientRect() ?? null;
+  return combineSubtitleLines(el, vr);
 }
 
 /**

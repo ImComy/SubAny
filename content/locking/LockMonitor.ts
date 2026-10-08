@@ -3,6 +3,7 @@
 import type { ContentState } from '../state/ContentState';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
 import { getVideoForElement, resolveCaptionLineContainer } from '../../utils/dom';
+import { combineSubtitleLines } from '../detection/SubtitleGrouping';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -152,7 +153,20 @@ function isPlausibleCaptionContainer(el: HTMLElement | null): boolean {
   if (rect.width <= 0 || rect.height <= 0) return false;
 
   const tb = textBounds(el);
-  if (tb && rect.width - tb.width > MAX_WRAPPER_SLACK_PX) return false;
+  if (tb && rect.width - tb.width > MAX_WRAPPER_SLACK_PX) {
+    const elText = normalizeSubtitleText(el.textContent ?? '').replace(/\s+/g, '');
+    const hasTighterTextChild = Array.from(el.children).some((child) => {
+      const c = child as HTMLElement;
+      const cText = normalizeSubtitleText(c.textContent ?? '').replace(/\s+/g, '');
+      if (cText && cText === elText) {
+        const cRect = c.getBoundingClientRect();
+        return cRect.width > 0 && rect.width - cRect.width > MAX_WRAPPER_SLACK_PX;
+      }
+      return false;
+    });
+
+    if (hasTighterTextChild) return false;
+  }
 
   return true;
 }
@@ -180,17 +194,35 @@ function isLiveCaptionCandidate(el: HTMLElement, videoRect: DOMRect): boolean {
     return false;
   }
 
-  // Reject player wrappers.
-  if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.15) return false;
-
   // Must contain plausible subtitle text.
   const text = normalizeSubtitleText(el.textContent ?? '');
   if (text.length < 2 || text.length > 400) return false;
   if (!isSubtitleText(text)) return false;
 
-  // Reject full-width block wrappers that only *contain* the caption.
+  // Reject player wrappers/layers (full video size).
   const tb = textBounds(el);
-  if (tb && r.width - tb.width > MAX_WRAPPER_SLACK_PX) return false;
+  const contentWidth = tb ? tb.width : r.width;
+  const contentHeight = tb ? tb.height : r.height;
+  if (contentWidth > videoRect.width * 0.95 && contentHeight > videoRect.height * 0.35) return false;
+  if (r.width > videoRect.width * 0.95 && r.height > videoRect.height * 0.45) return false;
+
+  // Reject full-width block wrappers that only *contain* the caption,
+  // BUT do not reject legitimate multi-line containers whose children
+  // are separate subtitle lines (e.g. karaoke lines, dual subtitles).
+  if (tb && r.width - tb.width > MAX_WRAPPER_SLACK_PX) {
+    const elText = normalizeSubtitleText(el.textContent ?? '').replace(/\s+/g, '');
+    const hasTighterTextChild = Array.from(el.children).some((child) => {
+      const c = child as HTMLElement;
+      const cText = normalizeSubtitleText(c.textContent ?? '').replace(/\s+/g, '');
+      if (cText && cText === elText) {
+        const cRect = c.getBoundingClientRect();
+        return cRect.width > 0 && r.width - cRect.width > MAX_WRAPPER_SLACK_PX;
+      }
+      return false;
+    });
+
+    if (hasTighterTextChild) return false;
+  }
 
   return true;
 }
@@ -212,8 +244,9 @@ export function resolveStableContainer(
   videoRect: DOMRect | null,
 ): HTMLElement {
   const lineTarget = resolveCaptionLineContainer(clickedElement, videoRect);
-  let current: HTMLElement = lineTarget;
-  let best: HTMLElement = lineTarget;
+  const groupTarget = combineSubtitleLines(lineTarget, videoRect);
+  let current: HTMLElement = groupTarget;
+  let best: HTMLElement = groupTarget;
 
   for (let i = 0; i < 6; i++) {
     const parent = current.parentElement;
@@ -237,16 +270,32 @@ export function resolveStableContainer(
     const currentRect = current.getBoundingClientRect();
 
     // Check whether the parent hugs its text contents.
+    // If the parent contains multiple sibling subtitle lines (karaoke, dual subtitles),
+    // it is only an unnecessary wrapper if a single child already contains all of its text.
     const tb = textBounds(parent);
     if (tb && parentRect.width - tb.width > MAX_WRAPPER_SLACK_PX) {
-      break;
+      const parentText = normalizeSubtitleText(parent.textContent ?? '').replace(/\s+/g, '');
+      const hasTighterTextChild = Array.from(parent.children).some((child) => {
+        const c = child as HTMLElement;
+        const cText = normalizeSubtitleText(c.textContent ?? '').replace(/\s+/g, '');
+        if (cText && cText === parentText) {
+          const cRect = c.getBoundingClientRect();
+          return cRect.width > 0 && parentRect.width - cRect.width > MAX_WRAPPER_SLACK_PX;
+        }
+        return false;
+      });
+
+      if (hasTighterTextChild) break;
     } else if (!tb && parentRect.width - currentRect.width > MAX_WRAPPER_SLACK_PX) {
       break;
     }
 
     if (videoRect) {
-      if (parentRect.width > videoRect.width * 0.98) break;
-      if (parentRect.width > videoRect.width * 0.90 && parentRect.height > videoRect.height * 0.15) break;
+      const contentWidth = tb ? tb.width : parentRect.width;
+      const contentHeight = tb ? tb.height : parentRect.height;
+      if (contentWidth > videoRect.width * 0.95) break;
+      if (contentHeight > videoRect.height * 0.40) break;
+      if (parentRect.height > videoRect.height * 0.45 && parentRect.width > videoRect.width * 0.90) break;
     }
 
     best = parent;

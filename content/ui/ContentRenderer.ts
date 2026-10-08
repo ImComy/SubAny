@@ -5,7 +5,8 @@ import { SubtitleOverlay } from '../../components/SubtitleOverlay';
 import { Tooltip } from '../../components/Tooltip';
 import type { ContentState } from '../state/ContentState';
 import type { ExtensionRoot } from './ExtensionRoot';
-import { resolveCaptionLineContainer } from '../../utils/dom';
+import { getVideoForElement, resolveCaptionLineContainer } from '../../utils/dom';
+import { combineSubtitleLines, isMultiLineSubtitleContainer } from '../detection/SubtitleGrouping';
 
 export interface ContentRendererDeps {
   onUnlock: () => void;
@@ -190,7 +191,15 @@ export class ContentRenderer {
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
 
-    return resolveCaptionLineContainer(container);
+    const video = getVideoForElement(container);
+    const videoRect = video?.getBoundingClientRect() ?? null;
+
+    if (isMultiLineSubtitleContainer(container, videoRect)) {
+      return container;
+    }
+
+    const lineTarget = resolveCaptionLineContainer(container, videoRect);
+    return combineSubtitleLines(lineTarget, videoRect);
   }
 
   /**

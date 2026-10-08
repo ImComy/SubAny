@@ -1,4 +1,4 @@
-import { resolveCaptionLineContainer } from '../../utils/dom';
+import { resolveCaptionLineContainer, measureGlyphBounds } from '../../utils/dom';
 import { isPlaybackTimeText, isSubtitleText, normalizeSubtitleText } from '../../utils/text';
 import {
   getSubtitlePresentationAncestor,
@@ -27,12 +27,15 @@ export function scoreAutoCandidate(element: HTMLElement, video: HTMLVideoElement
 
   let score = scored.score;
   const rect = element.getBoundingClientRect();
+  const tb = measureGlyphBounds(element);
+  const contentWidth = tb ? tb.width : rect.width;
+  const contentHeight = tb ? tb.height : rect.height;
 
   if (videoRect && videoRect.width > 0 && videoRect.height > 0) {
     const cx = (rect.left + rect.width / 2 - videoRect.left) / videoRect.width;
     const cy = (rect.top + rect.height / 2 - videoRect.top) / videoRect.height;
-    const widthRatio = rect.width / videoRect.width;
-    const heightRatio = rect.height / videoRect.height;
+    const widthRatio = contentWidth / videoRect.width;
+    const heightRatio = contentHeight / videoRect.height;
 
     if (cx > 0.20 && cx < 0.80) score += weights.centeredX;
     else if (cx > 0.10 && cx < 0.90) score += weights.nearCenteredX;
@@ -135,9 +138,13 @@ export function collectAutoSubtitleCandidates(): AutoCandidate[] {
             (rect.top >= videoRect.top + videoRect.height * 0.35) ||
             (rect.top >= videoRect.top + videoRect.height * 0.03 && rect.bottom <= videoRect.top + videoRect.height * 0.35);
 
+          const tb = measureGlyphBounds(el);
+          const contentWidth = tb ? tb.width : rect.width;
+          const contentHeight = tb ? tb.height : rect.height;
+
           const tooBig =
-            rect.width > videoRect.width * 0.90 &&
-            rect.height > videoRect.height * 0.15;
+            contentWidth > videoRect.width * 0.90 &&
+            contentHeight > videoRect.height * 0.15;
 
           if (insideVideo && inSubtitleBand && !tooBig) {
             if (isUsableSubtitleLine(el, videoRect) && !isPlayerControlRegion(el, videoRect)) {

@@ -184,10 +184,22 @@ export function handleInteractiveMouseMove(
     const extraction = extractAt(state, e);
     if (extraction.text) {
       state.hoveredWordRect = extraction.rect;
+      state.notify();
       if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
       hoverWordTimeout = window.setTimeout(() => {
         void doTranslate(state, deps, extraction, e.clientX, e.clientY);
       }, 35);
+      return;
+    } else {
+      if (hoverWordTimeout) {
+        window.clearTimeout(hoverWordTimeout);
+        hoverWordTimeout = null;
+      }
+      if (state.hoveredWordRect || state.tooltipState) {
+        clearInteractiveTranslation(state);
+        state.notify();
+        if (state.settings.pauseVideoOnHover) deps.videoController.resume(180);
+      }
       return;
     }
   }
@@ -196,10 +208,22 @@ export function handleInteractiveMouseMove(
     const extraction = extractAtUniversal(state, e);
     if (extraction.text) {
       state.hoveredWordRect = extraction.rect;
+      state.notify();
       if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
       hoverWordTimeout = window.setTimeout(() => {
         void doTranslate(state, deps, extraction, e.clientX, e.clientY);
       }, 35);
+      return;
+    } else {
+      if (hoverWordTimeout) {
+        window.clearTimeout(hoverWordTimeout);
+        hoverWordTimeout = null;
+      }
+      if (state.hoveredWordRect || state.tooltipState) {
+        clearInteractiveTranslation(state);
+        state.notify();
+        if (state.settings.pauseVideoOnHover) deps.videoController.resume(180);
+      }
       return;
     }
   }
@@ -209,14 +233,30 @@ export function handleInteractiveMouseMove(
   const overDomSubtitle = activeContainsPointer || tContainsActive || isOverActiveContainer(state, e);
 
   if (overDomSubtitle) {
-    if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
-    hoverWordTimeout = window.setTimeout(() => {
-      const extraction = extractAt(state, e);
-      if (extraction.text) {
+    const extraction = extractAt(state, e);
+    if (extraction.text) {
+      state.hoveredWordRect = extraction.rect;
+      state.notify();
+      if (hoverWordTimeout) window.clearTimeout(hoverWordTimeout);
+      hoverWordTimeout = window.setTimeout(() => {
         void doTranslate(state, deps, extraction, e.clientX, e.clientY);
+      }, 35);
+    } else {
+      if (hoverWordTimeout) {
+        window.clearTimeout(hoverWordTimeout);
+        hoverWordTimeout = null;
       }
-    }, 35);
+      if (state.hoveredWordRect || state.tooltipState) {
+        clearInteractiveTranslation(state);
+        state.notify();
+        if (state.settings.pauseVideoOnHover) deps.videoController.resume(180);
+      }
+    }
   } else if (state.tooltipState || state.hoveredWordRect) {
+    if (hoverWordTimeout) {
+      window.clearTimeout(hoverWordTimeout);
+      hoverWordTimeout = null;
+    }
     clearInteractiveTranslation(state);
     state.notify();
     if (state.settings.pauseVideoOnHover) deps.videoController.resume(180);

@@ -1,6 +1,6 @@
 // locking/LockedAnchor.ts
 
-import { getVideoForElement, getVideoSignature } from '../../utils/dom';
+import { getVideoForElement, getVideoSignature, measureGlyphBounds } from '../../utils/dom';
 import { normalizeSubtitleText, isSubtitleText } from '../../utils/text';
 import { getSubtitlePresentationAncestor, hasSubtitleClass } from '../detection/CandidateScorer';
 import type { LockedSubtitleAnchor } from '../state/types';
@@ -84,17 +84,20 @@ export function isHealthyLockedElement(element: HTMLElement | null): boolean {
   if (rect.width <= 0 || rect.height <= 0) return false;
 
   const video = getVideoForElement(element);
+  const tb = measureGlyphBounds(element);
+  const contentWidth = tb ? tb.width : rect.width;
+  const contentHeight = tb ? tb.height : rect.height;
 
   // A healthy locked element should still look like a subtitle-sized
   // visual object.
-  if (rect.width > window.innerWidth * 0.96) return false;
-  if (!video && rect.height > window.innerHeight * 0.30) return false;
+  if (contentWidth > window.innerWidth * 0.96) return false;
+  if (!video && contentHeight > window.innerHeight * 0.30) return false;
 
   if (video) {
     const vr = video.getBoundingClientRect();
     if (vr.width > 0 && vr.height > 0) {
-      if (rect.width >= vr.width * 0.96) return false;
-      if (rect.height >= vr.height * 0.45) return false;
+      if (contentWidth >= vr.width * 0.96) return false;
+      if (contentHeight >= vr.height * 0.45) return false;
 
       // Reject elements that have drifted completely outside the video and its player shell
       if (rect.bottom < vr.top - 40 || rect.top > vr.bottom + 40) return false;
@@ -114,13 +117,18 @@ export function isHealthyLockedElement(element: HTMLElement | null): boolean {
 export function isValidSelectionTarget(element: HTMLElement, videoRect: DOMRect | null): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
-  if (rect.width > window.innerWidth * 0.96) return false;
-  if (!videoRect && rect.height > window.innerHeight * 0.30) return false;
+
+  const tb = measureGlyphBounds(element);
+  const contentWidth = tb ? tb.width : rect.width;
+  const contentHeight = tb ? tb.height : rect.height;
+
+  if (contentWidth > window.innerWidth * 0.96) return false;
+  if (!videoRect && contentHeight > window.innerHeight * 0.30) return false;
   if (!isSubtitleText(normalizeSubtitleText(element.textContent || ''))) return false;
 
   if (videoRect) {
-    if (rect.width >= videoRect.width * 0.96) return false;
-    if (rect.height >= videoRect.height * 0.45) return false;
+    if (contentWidth >= videoRect.width * 0.96) return false;
+    if (contentHeight >= videoRect.height * 0.45) return false;
     if (rect.right < videoRect.left - 40 || rect.left > videoRect.right + 40) return false;
     if (rect.bottom < videoRect.top - 40 || rect.top > videoRect.bottom + 40) return false;
   }

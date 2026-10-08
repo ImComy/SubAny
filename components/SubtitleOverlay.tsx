@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { measureGlyphBounds } from '../utils/dom';
 
 export interface SubtitleOverlayProps {
   glowTarget: HTMLElement | null;
@@ -69,7 +70,8 @@ export function SubtitleOverlay({
         continue;
       }
 
-      const rect = target.getBoundingClientRect();
+      const glyphBounds = target === selectionCandidate ? measureGlyphBounds(target) : null;
+      const rect = glyphBounds ?? target.getBoundingClientRect();
       overlay.style.display = rect.width > 0 && rect.height > 0 ? 'block' : 'none';
       if (overlay === bilingualRef.current) {
         overlay.style.left = `${rect.left}px`;

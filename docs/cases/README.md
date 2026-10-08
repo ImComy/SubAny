@@ -25,6 +25,7 @@ fix attempt — see **Misfiled cases** below.
 | [019](./019-top-and-out-of-frame-captions.md) | Top-of-screen and out-of-frame captions rejected by bottom-band gates | Detection | Fixed | All |
 | [020](./020-multi-span-leaf-selection.md) | Multi-span caption selection isolated single word instead of full sentence | Detection | Fixed | All |
 | [021](./021-transform-motion-tracking-stall.md) | Transform motion tracking stopped after empty cue gap until hover | Lifecycle | Fixed | All |
+| [022](./022-multi-line-block-captions.md) | Multi-line and dual-subtitle block containers isolated to single line | Grouping & Locking | Fixed | All |
 
 Numbers 017 and 018 are retired. They were fix attempts during the
 diagnosis of case 016 that were mislabelled as their own cases. Their

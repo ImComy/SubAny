@@ -1,7 +1,7 @@
 // detection/CandidateScorer.ts
 
 import { normalizeSubtitleText, isSubtitleText, isPlaybackTimeText } from '../../utils/text';
-import { getDomDepth } from '../../utils/dom';
+import { getDomDepth, measureGlyphBounds } from '../../utils/dom';
 
 export interface CandidateScore {
   element: HTMLElement;
@@ -179,13 +179,22 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
     const cTag = child.tagName.toLowerCase();
     return ['span', 'b', 'i', 'em', 'strong', 'mark', 'font', 'ruby', 'rt', 'a', 'br'].includes(cTag);
   });
+  const hasMultipleSubtitleChildren =
+    el.children.length > 1 &&
+    Array.from(el.children).some((child) => isSubtitleText((child.textContent ?? '').trim())) &&
+    Array.from(el.children).every((child) => {
+      const c = child as HTMLElement;
+      const cText = (c.textContent ?? '').trim();
+      return (!cText || isSubtitleText(cText)) && c.querySelectorAll('button, input, select, video, audio, canvas').length === 0;
+    });
+  const isMultiLineBlock = isInlineLine || hasMultipleSubtitleChildren;
 
   if (hasOnlyTextOrBr) { score += 50; reasons.push('leaf-like'); }
   else if (el.children.length === 0) { score += 50; reasons.push('leaf-element'); }
-  else if (isInlineLine) { score += 50; reasons.push('inline-line-container'); }
+  else if (isMultiLineBlock) { score += 50; reasons.push('subtitle-block-container'); }
 
   // 10. Penalty for multiple element children
-  if (!isInlineLine) {
+  if (!isMultiLineBlock) {
     if (el.children.length > 1 && !hasOnlyTextOrBr) { score -= 25; reasons.push('multiple-children'); }
     else if (el.children.length > 0 && !hasOnlyTextOrBr) { score -= 15; reasons.push('has-children'); }
   }
@@ -194,15 +203,18 @@ export function scoreSubtitleCandidate(el: HTMLElement): CandidateScore | null {
   if (style.pointerEvents === 'none') { score -= 50; reasons.push('pointer-events-none'); }
 
   // 12. Penalty for being too large
-  if (rect.width > viewportWidth * 0.7) { score -= 40; reasons.push('too-wide-container'); }
-  if (rect.height > viewportHeight * 0.2) { score -= 30; reasons.push('too-tall-container'); }
+  const tb = measureGlyphBounds(el);
+  const contentWidth = tb ? tb.width : rect.width;
+  const contentHeight = tb ? tb.height : rect.height;
+  if (contentWidth > viewportWidth * 0.7) { score -= 40; reasons.push('too-wide-container'); }
+  if (contentHeight > viewportHeight * 0.2) { score -= 30; reasons.push('too-tall-container'); }
 
   // 13. Penalty if element has any child that is also a subtitle candidate
   const hasSubtitleChild = Array.from(el.children).some((child) => {
     const childText = (child as HTMLElement).textContent?.trim() || '';
     return isSubtitleText(childText) && hasSubtitleClass(child as HTMLElement);
   });
-  if (hasSubtitleChild && !isInlineLine) { score -= 40; reasons.push('has-subtitle-child'); }
+  if (hasSubtitleChild && !isMultiLineBlock) { score -= 40; reasons.push('has-subtitle-child'); }
 
   return { element: el, score, reasons };
 }

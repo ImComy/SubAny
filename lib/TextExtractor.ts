@@ -113,6 +113,10 @@ export class TextExtractor {
   static getWordFromContainer(container: HTMLElement, x: number, y: number): TextExtractionResult {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     let node: Node | null;
+    let closestMatch: { word: string; rect: DOMRect; dist: number } | null = null;
+
+    const padX = 8;
+    const padY = 6;
 
     while ((node = walker.nextNode())) {
       const text = node.textContent ?? '';
@@ -125,25 +129,34 @@ export class TextExtractor {
         const end = start + match[0].length;
         const rect = makeRangeRect(node, start, end);
         if (rect && rect.width > 0 && rect.height > 0) {
-          // Generous 5px padding for forgiving hover
           if (
-            x >= rect.left - 5 &&
-            x <= rect.right + 5 &&
-            y >= rect.top - 5 &&
-            y <= rect.bottom + 5
+            x >= rect.left - padX &&
+            x <= rect.right + padX &&
+            y >= rect.top - padY &&
+            y <= rect.bottom + padY
           ) {
             const word = match[0].replace(/^['-]+|['-]+$/g, '').trim();
             if (word) {
-              return {
-                text: word,
-                rect,
-                mode: 'word',
-              };
+              const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+              const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+              const dist = Math.hypot(dx, dy);
+              if (!closestMatch || dist < closestMatch.dist) {
+                closestMatch = { word, rect, dist };
+              }
             }
           }
         }
       }
     }
+
+    if (closestMatch) {
+      return {
+        text: closestMatch.word,
+        rect: closestMatch.rect,
+        mode: 'word',
+      };
+    }
+
     return EMPTY;
   }
 
