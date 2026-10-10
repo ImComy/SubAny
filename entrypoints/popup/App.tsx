@@ -209,11 +209,13 @@ export default function App() {
       <div>
         <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
-              <span className="text-lg font-black text-white leading-none">S</span>
-            </div>
+            <img
+              src="/logo.svg"
+              alt="SubAny"
+              className="w-8 h-8 object-contain drop-shadow-[0_2px_8px_rgba(63,120,247,0.35)]"
+            />
             <div>
-              <h1 className="text-base font-bold bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent leading-tight">
+              <h1 className="text-base font-bold bg-gradient-to-r from-white via-slate-100 to-slate-300 bg-clip-text text-transparent leading-tight">
                 SubAny
               </h1>
               <p className="text-[10px] text-cyan-400 font-semibold tracking-wider uppercase">
